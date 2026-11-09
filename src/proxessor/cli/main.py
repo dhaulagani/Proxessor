@@ -89,9 +89,20 @@ def cmd_run(args):
     except KeyboardInterrupt:
         print("\n[PROXESSOR] Daemon terminated cleanly by user.")
 
+def cmd_gui(args):
+    """Launches the modern desktop GUI."""
+    cfg_path = args.config or DEFAULT_CONFIG_PATH
+    from src.proxessor.gui.app import launch_gui
+    launch_gui(cfg_path)
+
 def main():
     parser = argparse.ArgumentParser(description="Proxessor: Open-source Windows Process Governor")
     subparsers = parser.add_subparsers(dest="command", help="Available subcommands")
+
+    # GUI command
+    gui_parser = subparsers.add_parser("gui", help="Launch the modern desktop graphical interface")
+    gui_parser.add_argument("--config", type=str, default=None, help="Path to custom rules JSON config")
+    gui_parser.set_defaults(func=cmd_gui)
 
     # Run command
     run_parser = subparsers.add_parser("run", help="Start the background governor daemon")
@@ -114,7 +125,9 @@ def main():
 
     args = parser.parse_args()
     if not args.command:
-        parser.print_help()
+        # Default to launching the GUI if no subcommand is given
+        from src.proxessor.gui.app import launch_gui
+        launch_gui(DEFAULT_CONFIG_PATH)
         sys.exit(0)
 
     args.func(args)

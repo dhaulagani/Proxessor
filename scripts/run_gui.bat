@@ -1,0 +1,3 @@
+@echo off
+echo Launching Proxessor Graphical Interface...
+start "" pythonw -m src.proxessor.cli.main gui %*
