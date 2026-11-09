@@ -1,3 +1,5 @@
 @echo off
-echo Launching Proxessor Graphical Interface...
-start "" pythonw -m src.proxessor.cli.main gui %*
+setlocal
+cd /d "%~dp0\.."
+set PYTHONPATH=%CD%
+start "" python -m src.proxessor.cli.main gui %*
