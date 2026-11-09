@@ -9,6 +9,10 @@
 
 **Proxessor** is a high-performance, open-source Windows process governor and system optimizer engineered to deliver all the advanced real-time prioritization and CPU scheduling features of commercial utilities (such as Process Lasso Pro) — with **zero artificial paywalls, zero nag screens, zero subscription fees, and zero telemetry**.
 
+Proxessor includes both:
+1. 🦀 **High-Performance Native Rust Core Engine (`rust/`)**: Compiled bare-metal Windows executable (`1.6 MB`, `< 2 MB` RAM footprint, `0.0%` CPU idle, deterministic microsecond latency with zero garbage collection).
+2. 🖥️ **Bespoke Desktop GUI Client (`src/proxessor/gui/`)**: Anti-slop systems interface with live process table, visual tuning drawer, and real-time ProBalance telemetry.
+
 ---
 
 ## 🚀 Key Highlights & Pro Features (100% Unlocked)

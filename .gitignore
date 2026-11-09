@@ -33,6 +33,11 @@ ENV/
 htmlcov/
 .pytest_cache/
 
+# Rust Target
+target/
+rust/target/
+Cargo.lock
+
 # OS specific
 Thumbs.db
 ehthumbs.db
