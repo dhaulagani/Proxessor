@@ -38,6 +38,11 @@ target/
 rust/target/
 Cargo.lock
 
+# Binaries & Executables
+*.exe
+bin/
+proxessor.exe
+
 # OS specific
 Thumbs.db
 ehthumbs.db
