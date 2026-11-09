@@ -1,0 +1,77 @@
+{
+  "version": "1.0.0",
+  "engine": {
+    "poll_interval_ms": 1000,
+    "foreground_boost_enabled": true,
+    "smart_trim_enabled": true,
+    "smart_trim_threshold_percent": 85,
+    "smart_trim_interval_seconds": 300
+  },
+  "probalance": {
+    "enabled": true,
+    "cpu_trigger_threshold_percent": 65.0,
+    "per_process_cpu_trigger_percent": 20.0,
+    "target_restraint_priority": "BELOW_NORMAL",
+    "restraint_duration_seconds": 10,
+    "ignore_foreground_process": true,
+    "affinity_exclusion_mask": "0xFFFFFFFFFFFFFFFF",
+    "excluded_processes": [
+      "dwm.exe",
+      "csrss.exe",
+      "explorer.exe",
+      "audiodg.exe",
+      "System",
+      "System Idle Process",
+      "proxessor.exe",
+      "python.exe"
+    ]
+  },
+  "heterogeneous_cpu": {
+    "prefer_p_cores_for_foreground": true,
+    "offload_background_to_e_cores": false
+  },
+  "rules": [
+    {
+      "name": "Gaming High Performance Boost",
+      "pattern": "(?i)(cyberpunk2077|eldenring|valorant|cs2|dota2|overwatch|gta5|starfield)\\.exe",
+      "priority": "HIGH",
+      "io_priority": "HIGH",
+      "memory_priority": 5,
+      "power_throttling_eco_qos": false,
+      "cpu_affinity": "P_CORES",
+      "power_scheme": "HIGH_PERFORMANCE"
+    },
+    {
+      "name": "Web Browsers Efficiency Tuning",
+      "pattern": "(?i)(chrome|msedge|brave|firefox|opera)\\.exe",
+      "priority": "NORMAL",
+      "io_priority": "NORMAL",
+      "memory_priority": 3,
+      "power_throttling_eco_qos": true,
+      "cpu_affinity": "ALL_CORES"
+    },
+    {
+      "name": "Heavy Background Rendering / Compilers",
+      "pattern": "(?i)(blender|handbrake|ffmpeg|vivid|clang|rustc|msbuild)\\.exe",
+      "priority": "BELOW_NORMAL",
+      "io_priority": "LOW",
+      "memory_priority": 2,
+      "power_throttling_eco_qos": true,
+      "cpu_affinity": "ALL_CORES"
+    }
+  ],
+  "watchdogs": [
+    {
+      "name": "Single Instance Enforcement",
+      "pattern": "(?i)(steam|discord|spotify)\\.exe",
+      "max_instances": 1,
+      "action": "TERMINATE_NEWEST"
+    },
+    {
+      "name": "Memory Leak Limiter",
+      "pattern": "(?i)(leak_prone_daemon)\\.exe",
+      "max_memory_mb": 4096,
+      "action": "TRIM_WORKING_SET"
+    }
+  ]
+}
