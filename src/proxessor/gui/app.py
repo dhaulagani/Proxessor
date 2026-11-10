@@ -21,6 +21,7 @@ from tkinter import ttk, messagebox, filedialog
 import customtkinter as ctk
 
 from src.proxessor.gui.controller import GUIController
+from src.proxessor.gui.tray import SystemTrayManager
 
 # Design System Tokens (from docs/DESIGN.md)
 COLOR_BG = "#0b0d13"
@@ -106,10 +107,21 @@ class ProxessorApp(ctk.CTk):
         self.sort_col = "cpu_percent"
         self.sort_desc = True
         self.polling_active = True
+        self.tray_notified = False
 
         self._setup_layout()
         self._setup_context_menu()
         self._start_background_polling()
+
+        # System Tray Integration
+        self.tray_manager = SystemTrayManager(
+            on_show=self._show_window_from_tray,
+            on_exit=self._exit_full_application,
+            on_smart_trim=self._on_smart_trim,
+            on_power_change=self._on_power_scheme_change
+        )
+        self.tray_manager.start()
+        self.protocol("WM_DELETE_WINDOW", self._on_close_to_tray)
 
     def _setup_layout(self):
         # 1. Top Header Bar
@@ -195,6 +207,20 @@ class ProxessorApp(ctk.CTk):
         )
         self.opt_power.set("HIGH_PERFORMANCE")
         self.opt_power.pack(side=tk.LEFT, padx=4)
+
+        btn_tray = ctk.CTkButton(
+            triggers_frame,
+            text="Hide to Tray",
+            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+            fg_color="#1e293b",
+            hover_color=COLOR_CARD_HOVER,
+            text_color=COLOR_ACCENT_BLUE,
+            width=100,
+            height=32,
+            corner_radius=6,
+            command=self._on_close_to_tray
+        )
+        btn_tray.pack(side=tk.LEFT, padx=4)
 
         # 2. Real-Time Telemetry Graph
         graph_card = ctk.CTkFrame(self, fg_color=COLOR_CARD, corner_radius=10, border_width=1, border_color=COLOR_BORDER)
@@ -643,6 +669,9 @@ class ProxessorApp(ctk.CTk):
         self.lbl_status.configure(
             text=f"Governor: Native Ring-3 Active • Zero-GC • Monitored Processes: {state.get('processes_count', 0)} | System Responsive"
         )
+
+        if hasattr(self, "tray_manager"):
+            self.tray_manager.update_tooltip(cpu, ram, restrained)
 
         # Update real-time canvas graph
         self.graph.update_history(
@@ -1159,6 +1188,32 @@ class ProxessorApp(ctk.CTk):
             messagebox.showinfo("Saved", "ProBalance parameters saved and applied successfully!")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save engine parameters: {e}")
+
+    def _on_close_to_tray(self):
+        """Hides the main window to Windows system tray instead of closing."""
+        self.withdraw()
+        if not getattr(self, "tray_notified", False):
+            self.tray_notified = True
+            if hasattr(self, "tray_manager"):
+                self.tray_manager.notify(
+                    "Proxessor Running in Background",
+                    "Proxessor is active in the system tray. Click or right-click the icon anytime to open or tune settings."
+                )
+
+    def _show_window_from_tray(self):
+        """Restores window from system tray (thread-safe)."""
+        def restore():
+            self.deiconify()
+            self.lift()
+            self.focus_force()
+        self.after(0, restore)
+
+    def _exit_full_application(self):
+        """Cleanly terminates the application, polling thread, and tray icon."""
+        self.polling_active = False
+        if hasattr(self, "tray_manager"):
+            self.tray_manager.stop()
+        self.after(50, self.destroy)
 
 def launch_gui(config_path: str = "config/default_rules.json"):
     app = ProxessorApp(config_path)
