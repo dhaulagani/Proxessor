@@ -2,9 +2,8 @@
 Manages the Windows notification area icon, tooltip telemetry, and quick-action context menu.
 """
 
-import threading
 from typing import Callable, Optional
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 import pystray
 from pystray import MenuItem as item, Menu
 
@@ -19,17 +18,14 @@ def create_default_tray_image(size: int = 64) -> Image.Image:
     draw.ellipse([4, 4, size - 5, size - 5], fill=(18, 22, 32, 255), outline=(16, 185, 129, 255), width=3)
 
     # Inner emblem "P"
-    # Vertical stem
     draw.rectangle([20, 16, 26, 48], fill=(248, 250, 252, 255))
-    # Top loop
     draw.rounded_rectangle([24, 16, 44, 34], radius=6, fill=(16, 185, 129, 255))
-    # Cutout inside loop
     draw.rounded_rectangle([27, 21, 38, 29], radius=3, fill=(18, 22, 32, 255))
 
     return image
 
 class SystemTrayManager:
-    """Manages the lifecycle, background thread, and menu events of the system tray icon."""
+    """Manages the lifecycle and events of the Windows system tray icon."""
 
     def __init__(
         self,
@@ -46,7 +42,6 @@ class SystemTrayManager:
 
         self.image = self._load_or_create_image(icon_path)
         self.icon: Optional[pystray.Icon] = None
-        self._thread: Optional[threading.Thread] = None
         self.is_running = False
 
     def _load_or_create_image(self, icon_path: Optional[str]) -> Image.Image:
@@ -77,29 +72,25 @@ class SystemTrayManager:
         return Menu(*menu_items)
 
     def start(self):
-        """Starts the system tray icon in a dedicated daemon thread."""
+        """Starts the system tray icon detached asynchronously."""
         if self.is_running:
             return
 
-        self.is_running = True
-        self.icon = pystray.Icon(
-            name="Proxessor",
-            icon=self.image,
-            title="Proxessor Process Governor\nProBalance: Active",
-            menu=self._create_menu()
-        )
-
-        def runner():
-            try:
-                self.icon.run()
-            except Exception:
-                pass
-
-        self._thread = threading.Thread(target=runner, daemon=True)
-        self._thread.start()
+        try:
+            self.icon = pystray.Icon(
+                name="Proxessor",
+                icon=self.image,
+                title="Proxessor Process Governor\nProBalance: Active",
+                menu=self._create_menu()
+            )
+            self.icon.run_detached()
+            self.is_running = True
+        except Exception as e:
+            self.icon = None
+            self.is_running = False
 
     def stop(self):
-        """Removes the system tray icon and terminates the tray thread."""
+        """Removes the system tray icon."""
         self.is_running = False
         if self.icon:
             try:
@@ -120,7 +111,7 @@ class SystemTrayManager:
             pass
 
     def notify(self, title: str, message: str):
-        """Displays a native Windows toast/balloon notification from the tray icon."""
+        """Displays a native Windows notification from the tray icon."""
         if self.icon and self.is_running:
             try:
                 self.icon.notify(message, title)

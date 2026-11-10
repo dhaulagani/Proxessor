@@ -123,6 +123,11 @@ class ProxessorApp(ctk.CTk):
         self.tray_manager.start()
         self.protocol("WM_DELETE_WINDOW", self._on_close_to_tray)
 
+        # Ensure window is explicitly visible and focused
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+
     def _setup_layout(self):
         # 1. Top Header Bar
         self.header = ctk.CTkFrame(self, fg_color=COLOR_CARD, corner_radius=10, border_width=1, border_color=COLOR_BORDER)
@@ -642,7 +647,8 @@ class ProxessorApp(ctk.CTk):
             while self.polling_active:
                 try:
                     state = self.controller.refresh_state()
-                    self.after(0, self._render_live_state, state)
+                    if self.winfo_exists():
+                        self.after(0, self._render_live_state, state)
                 except Exception:
                     pass
                 time.sleep(1.0)
@@ -970,7 +976,11 @@ class ProxessorApp(ctk.CTk):
         query = self.socket_filter.get().strip() if hasattr(self, "socket_filter") else ""
         def fetch():
             conns = self.controller.list_connections(query)
-            self.after(0, self._render_socket_table, conns)
+            try:
+                if self.winfo_exists():
+                    self.after(0, self._render_socket_table, conns)
+            except Exception:
+                pass
         threading.Thread(target=fetch, daemon=True).start()
 
     def _render_socket_table(self, conns):
@@ -1128,7 +1138,11 @@ class ProxessorApp(ctk.CTk):
         self.lbl_lock_status.configure(text=f"Scanning '{target}' via Restart Manager...")
         def run():
             lockers = self.controller.find_file_lockers(target)
-            self.after(0, self._render_lockers, lockers, target)
+            try:
+                if self.winfo_exists():
+                    self.after(0, self._render_lockers, lockers, target)
+            except Exception:
+                pass
         threading.Thread(target=run, daemon=True).start()
 
     def _render_lockers(self, lockers, path):

@@ -11,6 +11,18 @@ class CPUTopology:
         self.e_core_indices: List[int] = []
         self._detect_core_classes()
 
+    @property
+    def total_cores(self) -> int:
+        return self.logical_cores_count
+
+    @property
+    def p_cores(self) -> List[int]:
+        return self.p_core_indices
+
+    @property
+    def e_cores(self) -> List[int]:
+        return self.e_core_indices
+
     def _detect_core_classes(self):
         """Discovers core topology. If heterogeneous classification isn't exposed by standard API,
 
