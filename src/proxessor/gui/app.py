@@ -17,7 +17,7 @@ except Exception:
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../..")))
 
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 import customtkinter as ctk
 
 from src.proxessor.gui.controller import GUIController
@@ -242,11 +242,17 @@ class ProxessorApp(ctk.CTk):
         self.tabs.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 6))
 
         tab_procs = self.tabs.add("All Processes")
+        tab_cores = self.tabs.add("Per-Core Load")
+        tab_sockets = self.tabs.add("Network Sockets")
+        tab_filelock = self.tabs.add("File Lock Hunter")
         tab_rules = self.tabs.add("Active Rules")
         tab_engine = self.tabs.add("Engine Settings")
         tab_logs = self.tabs.add("ProBalance Journal")
 
         self._build_processes_tab(tab_procs)
+        self._build_cores_tab(tab_cores)
+        self._build_sockets_tab(tab_sockets)
+        self._build_filelock_tab(tab_filelock)
         self._build_rules_tab(tab_rules)
         self._build_engine_tab(tab_engine)
         self._build_logs_tab(tab_logs)
@@ -645,6 +651,15 @@ class ProxessorApp(ctk.CTk):
             state.get("restraint_history", [])
         )
 
+        # Update per-core load indicators
+        per_core = state.get("per_core_cpu", [])
+        if hasattr(self, "core_widgets") and per_core:
+            for idx, (pbar, lbl) in enumerate(self.core_widgets):
+                if idx < len(per_core):
+                    val = per_core[idx]
+                    pbar.set(val / 100.0)
+                    lbl.configure(text=f"{val:.1f}%")
+
         self._render_process_table()
         self._update_logs_view()
 
@@ -790,6 +805,339 @@ class ProxessorApp(ctk.CTk):
             self.rules_box.insert(tk.END, content)
         except Exception as e:
             self.rules_box.insert(tk.END, f"Error loading rules: {e}")
+
+    def _build_cores_tab(self, parent):
+        header = ctk.CTkFrame(parent, fg_color="transparent")
+        header.pack(fill=tk.X, padx=12, pady=(8, 4))
+
+        topo = self.controller.topology
+        info_txt = (
+            f"Heterogeneous CPU Topology: {topo.total_cores} Logical Cores | "
+            f"P-Cores (Perf): {len(topo.p_cores)} ({topo.p_cores}) | "
+            f"E-Cores (Eff): {len(topo.e_cores)} ({topo.e_cores})"
+        )
+        lbl_info = ctk.CTkLabel(
+            header,
+            text=info_txt,
+            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+            text_color=COLOR_ACCENT_BLUE
+        )
+        lbl_info.pack(side=tk.LEFT)
+
+        self.cores_scroll = ctk.CTkScrollableFrame(parent, fg_color=COLOR_BG, corner_radius=8)
+        self.cores_scroll.pack(fill=tk.BOTH, expand=True, padx=10, pady=8)
+
+        self.core_widgets = []
+        p_set = set(topo.p_cores)
+
+        # 4 columns grid
+        for i in range(topo.total_cores):
+            is_p = i in p_set
+            card = ctk.CTkFrame(self.cores_scroll, fg_color=COLOR_CARD, corner_radius=6, border_width=1, border_color=COLOR_BORDER)
+            row = i // 4
+            col = i % 4
+            card.grid(row=row, column=col, padx=6, pady=6, sticky="nsew")
+            self.cores_scroll.grid_columnconfigure(col, weight=1)
+
+            tag = "P-Core" if is_p else "E-Core"
+            tag_col = COLOR_ACCENT_GREEN if is_p else COLOR_ACCENT_BLUE
+
+            lbl_title = ctk.CTkLabel(
+                card,
+                text=f"Core {i} [{tag}]",
+                font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+                text_color=tag_col
+            )
+            lbl_title.pack(anchor="w", padx=8, pady=(4, 2))
+
+            pbar = ctk.CTkProgressBar(card, height=10, corner_radius=4, progress_color=tag_col, fg_color="#1e293b")
+            pbar.pack(fill=tk.X, padx=8, pady=2)
+            pbar.set(0.0)
+
+            lbl_val = ctk.CTkLabel(
+                card,
+                text="0.0%",
+                font=ctk.CTkFont(family="Consolas", size=10),
+                text_color=COLOR_TEXT_SECONDARY
+            )
+            lbl_val.pack(anchor="e", padx=8, pady=(0, 4))
+
+            self.core_widgets.append((pbar, lbl_val))
+
+    def _build_sockets_tab(self, parent):
+        toolbar = ctk.CTkFrame(parent, fg_color="transparent")
+        toolbar.pack(fill=tk.X, padx=10, pady=(8, 4))
+
+        self.socket_filter = ctk.CTkEntry(
+            toolbar,
+            placeholder_text="Filter port (e.g. 80, 443, 8080), IP, or process...",
+            width=320,
+            height=32,
+            font=ctk.CTkFont(family="Consolas", size=12),
+            fg_color=COLOR_BG,
+            border_color=COLOR_BORDER
+        )
+        self.socket_filter.pack(side=tk.LEFT, padx=(0, 8))
+        self.socket_filter.bind("<KeyRelease>", lambda e: self._refresh_sockets())
+
+        btn_refresh = ctk.CTkButton(
+            toolbar,
+            text="Refresh Sockets",
+            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+            fg_color="#1e293b",
+            hover_color=COLOR_CARD_HOVER,
+            width=120,
+            height=32,
+            command=self._refresh_sockets
+        )
+        btn_refresh.pack(side=tk.LEFT, padx=4)
+
+        btn_kill_sock = ctk.CTkButton(
+            toolbar,
+            text="Terminate Socket PID",
+            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+            fg_color="#7f1d1d",
+            hover_color=COLOR_ACCENT_RED,
+            width=140,
+            height=32,
+            command=self._on_kill_socket_process
+        )
+        btn_kill_sock.pack(side=tk.LEFT, padx=4)
+
+        table_frame = tk.Frame(parent, bg=COLOR_CARD)
+        table_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=6)
+
+        columns = ("proto", "local", "remote", "state", "name", "pid")
+        self.socket_tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="browse")
+        self.socket_tree.heading("proto", text="PROTO")
+        self.socket_tree.heading("local", text="LOCAL ENDPOINT")
+        self.socket_tree.heading("remote", text="REMOTE ENDPOINT")
+        self.socket_tree.heading("state", text="STATE")
+        self.socket_tree.heading("name", text="PROCESS NAME")
+        self.socket_tree.heading("pid", text="PID")
+
+        self.socket_tree.column("proto", width=70, anchor="center")
+        self.socket_tree.column("local", width=180, anchor="w")
+        self.socket_tree.column("remote", width=180, anchor="w")
+        self.socket_tree.column("state", width=110, anchor="center")
+        self.socket_tree.column("name", width=180, anchor="w")
+        self.socket_tree.column("pid", width=70, anchor="center")
+
+        scrollbar = ttk.Scrollbar(table_frame, orient=tk.VERTICAL, command=self.socket_tree.yview)
+        self.socket_tree.configure(yscrollcommand=scrollbar.set)
+        self.socket_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.lbl_socket_status = ctk.CTkLabel(
+            parent,
+            text="Active Endpoints: 0",
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            text_color=COLOR_TEXT_MUTED
+        )
+        self.lbl_socket_status.pack(anchor="w", padx=12, pady=(0, 6))
+        self.after(500, self._refresh_sockets)
+
+    def _refresh_sockets(self):
+        query = self.socket_filter.get().strip() if hasattr(self, "socket_filter") else ""
+        def fetch():
+            conns = self.controller.list_connections(query)
+            self.after(0, self._render_socket_table, conns)
+        threading.Thread(target=fetch, daemon=True).start()
+
+    def _render_socket_table(self, conns):
+        self.socket_tree.delete(*self.socket_tree.get_children())
+        for c in conns:
+            local = f"{c.get('local_addr')}:{c.get('local_port')}"
+            remote = f"{c.get('remote_addr')}:{c.get('remote_port')}" if c.get('remote_addr') else "*:*"
+            self.socket_tree.insert("", tk.END, values=(
+                c.get("proto", "TCP"),
+                local,
+                remote,
+                c.get("state", "UNKNOWN"),
+                c.get("name", "Unknown"),
+                c.get("pid", 0)
+            ))
+        self.lbl_socket_status.configure(text=f"Active Endpoints Listed: {len(conns)}")
+
+    def _on_kill_socket_process(self):
+        selected = self.socket_tree.selection()
+        if not selected:
+            messagebox.showinfo("Selection Required", "Please select a network connection from the table first.")
+            return
+        vals = self.socket_tree.item(selected[0], "values")
+        pid = int(vals[5])
+        name = vals[4]
+        if messagebox.askyesno("Confirm Terminate", f"Terminate process '{name}' (PID {pid}) holding this socket?"):
+            ok = self.controller.terminate_process(pid)
+            if ok:
+                messagebox.showinfo("Terminated", f"Successfully terminated {name} (PID {pid}).")
+                self._refresh_sockets()
+            else:
+                messagebox.showerror("Error", f"Could not terminate PID {pid}.")
+
+    def _build_filelock_tab(self, parent):
+        top_bar = ctk.CTkFrame(parent, fg_color="transparent")
+        top_bar.pack(fill=tk.X, padx=10, pady=(8, 4))
+
+        lbl_desc = ctk.CTkLabel(
+            top_bar,
+            text="Inspect which processes are locking a file or folder (Windows Restart Manager)",
+            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+            text_color=COLOR_TEXT_SECONDARY
+        )
+        lbl_desc.pack(anchor="w", pady=(0, 4))
+
+        input_row = ctk.CTkFrame(top_bar, fg_color="transparent")
+        input_row.pack(fill=tk.X)
+
+        self.entry_lock_path = ctk.CTkEntry(
+            input_row,
+            placeholder_text="Enter absolute path to file or folder...",
+            height=32,
+            font=ctk.CTkFont(family="Consolas", size=12),
+            fg_color=COLOR_BG,
+            border_color=COLOR_BORDER
+        )
+        self.entry_lock_path.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
+
+        btn_browse_f = ctk.CTkButton(
+            input_row,
+            text="File...",
+            width=65,
+            height=32,
+            fg_color="#1e293b",
+            hover_color=COLOR_CARD_HOVER,
+            command=self._browse_lock_file
+        )
+        btn_browse_f.pack(side=tk.LEFT, padx=3)
+
+        btn_browse_d = ctk.CTkButton(
+            input_row,
+            text="Folder...",
+            width=70,
+            height=32,
+            fg_color="#1e293b",
+            hover_color=COLOR_CARD_HOVER,
+            command=self._browse_lock_dir
+        )
+        btn_browse_d.pack(side=tk.LEFT, padx=3)
+
+        btn_scan = ctk.CTkButton(
+            input_row,
+            text="Scan Lockers",
+            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+            width=110,
+            height=32,
+            fg_color="#2563eb",
+            hover_color="#1d4ed8",
+            command=self._scan_file_locks
+        )
+        btn_scan.pack(side=tk.LEFT, padx=(3, 0))
+
+        table_frame = tk.Frame(parent, bg=COLOR_CARD)
+        table_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=6)
+
+        columns = ("pid", "name", "kind", "service")
+        self.lock_tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="browse")
+        self.lock_tree.heading("pid", text="PID")
+        self.lock_tree.heading("name", text="PROCESS NAME / APP")
+        self.lock_tree.heading("kind", text="APPLICATION TYPE")
+        self.lock_tree.heading("service", text="SERVICE NAME")
+
+        self.lock_tree.column("pid", width=80, anchor="center")
+        self.lock_tree.column("name", width=260, anchor="w")
+        self.lock_tree.column("kind", width=150, anchor="center")
+        self.lock_tree.column("service", width=180, anchor="w")
+
+        scrollbar = ttk.Scrollbar(table_frame, orient=tk.VERTICAL, command=self.lock_tree.yview)
+        self.lock_tree.configure(yscrollcommand=scrollbar.set)
+        self.lock_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        bottom_bar = ctk.CTkFrame(parent, fg_color="transparent")
+        bottom_bar.pack(fill=tk.X, padx=10, pady=(2, 8))
+
+        self.lbl_lock_status = ctk.CTkLabel(
+            bottom_bar,
+            text="Status: Ready to scan target resource.",
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            text_color=COLOR_TEXT_MUTED
+        )
+        self.lbl_lock_status.pack(side=tk.LEFT)
+
+        btn_kill_locker = ctk.CTkButton(
+            bottom_bar,
+            text="Terminate Selected Locker",
+            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+            fg_color="#7f1d1d",
+            hover_color=COLOR_ACCENT_RED,
+            height=30,
+            command=self._on_kill_file_locker
+        )
+        btn_kill_locker.pack(side=tk.RIGHT)
+
+    def _browse_lock_file(self):
+        fn = filedialog.askopenfilename(title="Select File to Inspect Locks")
+        if fn:
+            self.entry_lock_path.delete(0, tk.END)
+            self.entry_lock_path.insert(0, fn)
+            self._scan_file_locks()
+
+    def _browse_lock_dir(self):
+        d = filedialog.askdirectory(title="Select Folder to Inspect Locks")
+        if d:
+            self.entry_lock_path.delete(0, tk.END)
+            self.entry_lock_path.insert(0, d)
+            self._scan_file_locks()
+
+    def _scan_file_locks(self):
+        target = self.entry_lock_path.get().strip()
+        if not target:
+            messagebox.showinfo("Path Required", "Please specify or browse a file or directory path.")
+            return
+
+        self.lbl_lock_status.configure(text=f"Scanning '{target}' via Restart Manager...")
+        def run():
+            lockers = self.controller.find_file_lockers(target)
+            self.after(0, self._render_lockers, lockers, target)
+        threading.Thread(target=run, daemon=True).start()
+
+    def _render_lockers(self, lockers, path):
+        self.lock_tree.delete(*self.lock_tree.get_children())
+        if not lockers:
+            self.lbl_lock_status.configure(
+                text=f"No active locks found for '{path}'. Resource is unlocked.",
+                text_color=COLOR_ACCENT_GREEN
+            )
+            return
+
+        for item in lockers:
+            self.lock_tree.insert("", tk.END, values=(
+                item.get("pid"),
+                item.get("app_name"),
+                item.get("kind"),
+                item.get("service") or "-"
+            ))
+        self.lbl_lock_status.configure(
+            text=f"Found {len(lockers)} locking process(es) holding '{path}'!",
+            text_color=COLOR_ACCENT_AMBER
+        )
+
+    def _on_kill_file_locker(self):
+        selected = self.lock_tree.selection()
+        if not selected:
+            messagebox.showinfo("Selection Required", "Please select a locking process from the table first.")
+            return
+        vals = self.lock_tree.item(selected[0], "values")
+        pid = int(vals[0])
+        name = vals[1]
+        if messagebox.askyesno("Confirm Terminate", f"Terminate locker process '{name}' (PID {pid})?"):
+            ok = self.controller.terminate_process(pid)
+            if ok:
+                messagebox.showinfo("Unlocked", f"Successfully terminated locker {name} (PID {pid}).")
+                self._scan_file_locks()
+            else:
+                messagebox.showerror("Error", f"Failed to terminate PID {pid}.")
 
     def _save_engine_params(self):
         try:

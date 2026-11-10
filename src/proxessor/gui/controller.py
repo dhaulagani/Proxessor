@@ -9,6 +9,8 @@ from src.proxessor.core.power_manager import PowerPlanManager
 from src.proxessor.core.probalance import ProBalanceEngine
 from src.proxessor.rules.manager import RuleManager
 from src.proxessor.rules.schema import ProcessRule
+from src.proxessor.core.filelock import FileLockHunter
+from src.proxessor.core.connections import SocketInspector
 
 class GUIController:
     """Enterprise-grade GUI controller providing live telemetry history,
@@ -22,6 +24,8 @@ class GUIController:
         self.topology = CPUTopology()
         self.power_manager = PowerPlanManager()
         self.probalance = ProBalanceEngine(self.rule_manager.probalance_config)
+        self.file_lock_hunter = FileLockHunter()
+        self.socket_inspector = SocketInspector()
 
         self.cached_processes: List[Dict] = []
         self.system_cpu: float = 0.0
@@ -109,6 +113,7 @@ class GUIController:
             "processes_count": len(proc_list),
             "restrained_count": restrained_count,
             "processes": proc_list,
+            "per_core_cpu": psutil.cpu_percent(percpu=True),
             "cpu_history": list(self.cpu_history),
             "ram_history": list(self.ram_history),
             "restraint_history": list(self.restraint_history)
@@ -248,6 +253,38 @@ class GUIController:
         if ok:
             self.log_event(f"Active Power Scheme changed to -> {scheme_name}")
         return ok
+
+    def find_file_lockers(self, path: str) -> List[Dict]:
+        """Scans path for open locks/handles via Windows Restart Manager."""
+        results = self.file_lock_hunter.find_lockers(path)
+        self.log_event(f"Scanned locks for '{path}': found {len(results)} process(es)")
+        return results
+
+    def list_connections(self, query: str = "") -> List[Dict]:
+        """Enumerates active TCP/UDP sockets mapped to processes."""
+        conns = self.socket_inspector.list_connections()
+        # Associate process names
+        pid_name_map = {p["pid"]: p["name"] for p in self.cached_processes}
+        for c in conns:
+            c["name"] = pid_name_map.get(c["pid"], "System" if c["pid"] == 4 else "Unknown")
+
+        if not query:
+            return conns
+
+        q = query.lower()
+        return [
+            c for c in conns
+            if q in c.get("name", "").lower()
+            or q in str(c.get("local_port", ""))
+            or q in str(c.get("remote_port", ""))
+            or q in c.get("local_addr", "").lower()
+            or q in str(c.get("remote_addr", "") or "").lower()
+            or q in str(c.get("pid", ""))
+        ]
+
+    def get_per_core_cpu(self) -> List[float]:
+        """Returns per-logical-core CPU usage percentages."""
+        return psutil.cpu_percent(percpu=True)
 
     def _persist_rule_field(self, pid: int, field_name: str, value):
         """Helper to append or update a rule in config/default_rules.json."""
