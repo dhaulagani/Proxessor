@@ -57,10 +57,11 @@ class GUIController:
         self.ram_history.append(self.system_ram)
 
         proc_list = []
-        for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_info', 'num_threads']):
+        for proc in psutil.process_iter(['pid', 'ppid', 'name', 'cpu_percent', 'memory_info', 'num_threads']):
             try:
                 info = proc.info
                 pid = info['pid']
+                ppid = info.get('ppid', 0) or 0
                 name = info['name'] or ""
                 if pid <= 4 or not name:
                     continue
@@ -76,6 +77,7 @@ class GUIController:
 
                 proc_list.append({
                     "pid": pid,
+                    "ppid": ppid,
                     "name": name,
                     "cpu_percent": round(cpu_p, 1),
                     "memory_mb": round(mem_mb, 1),
@@ -317,3 +319,87 @@ class GUIController:
             self.log_event(f"Persisted rule '{field_name}: {value}' for {name} in config")
         except Exception as e:
             self.log_event(f"Error persisting rule for {name}: {e}")
+
+    def get_process_modules(self, pid: int) -> List[Dict]:
+        """Lists all dynamically loaded modules (.DLLs) mapped into the process address space."""
+        import os
+        modules = []
+        try:
+            p = psutil.Process(pid)
+            seen = set()
+            for m in p.memory_maps():
+                path = getattr(m, 'path', '') or ''
+                if path and path not in seen and path.lower().endswith(('.dll', '.exe', '.drv', '.ocx')):
+                    seen.add(path)
+                    rss_kb = round(m.rss / 1024, 1) if hasattr(m, 'rss') else 0
+                    modules.append({
+                        "name": os.path.basename(path),
+                        "path": path,
+                        "rss_kb": rss_kb
+                    })
+            modules.sort(key=lambda x: x["name"].lower())
+        except Exception:
+            pass
+        return modules
+
+    def get_process_handles(self, pid: int) -> List[Dict]:
+        """Lists open file and network socket handles associated with the given PID."""
+        handles = []
+        try:
+            p = psutil.Process(pid)
+            for f in p.open_files():
+                handles.append({
+                    "type": "File",
+                    "target": f.path,
+                    "detail": f"FD: {f.fd}" if hasattr(f, 'fd') and f.fd != -1 else "Open File"
+                })
+        except Exception:
+            pass
+
+        try:
+            p = psutil.Process(pid)
+            conn_fn = getattr(p, "net_connections", p.connections)
+            for c in conn_fn(kind='all'):
+                laddr = f"{c.laddr.ip}:{c.laddr.port}" if c.laddr else ""
+                raddr = f"{c.raddr.ip}:{c.raddr.port}" if c.raddr else ""
+                target = f"{laddr} -> {raddr}" if raddr else laddr
+                handles.append({
+                    "type": "Socket",
+                    "target": target,
+                    "detail": f"{getattr(c.type, 'name', 'TCP/UDP')} [{c.status}]"
+                })
+        except Exception:
+            pass
+
+        handles.sort(key=lambda x: (x["type"], x["target"]))
+        return handles
+
+    def build_tree_hierarchy(self, processes: List[Dict]) -> List[Dict]:
+        """Arranges process list into a hierarchical tree based on ppid with tree indentations."""
+        children_map = collections.defaultdict(list)
+        pid_set = {p["pid"] for p in processes}
+
+        roots = []
+        for p in processes:
+            ppid = p.get("ppid", 0)
+            if ppid in pid_set and ppid != p["pid"]:
+                children_map[ppid].append(p)
+            else:
+                roots.append(p)
+
+        result = []
+        def walk(node: Dict, depth: int, is_last: bool, prefix: str):
+            tree_prefix = prefix + ("└── " if is_last else "├── ") if depth > 0 else ""
+            node_copy = dict(node)
+            node_copy["display_name"] = tree_prefix + node["name"]
+            result.append(node_copy)
+
+            children = children_map.get(node["pid"], [])
+            for i, child in enumerate(children):
+                next_prefix = prefix + ("    " if is_last else "│   ") if depth > 0 else ""
+                walk(child, depth + 1, i == len(children) - 1, next_prefix)
+
+        for i, root in enumerate(roots):
+            walk(root, 0, i == len(roots) - 1, "")
+
+        return result

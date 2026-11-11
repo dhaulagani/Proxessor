@@ -57,16 +57,16 @@ class CPUTopology:
         return mask if mask != 0 else self.get_all_cores_mask()
 
     def parse_affinity_mask(self, mask_spec: str) -> int:
-        """Parses affinity strings like 'ALL_CORES', 'P_CORES', 'E_CORES', or '0xFFFF'."""
+        """Parses affinity strings like 'ALL_CORES', 'P_CORES', 'E_CORES', 'CCD0', 'CCD1', or '0xFFFF'."""
         if not mask_spec:
             return self.get_all_cores_mask()
 
         spec = str(mask_spec).strip().upper()
         if spec in ("ALL_CORES", "ALL"):
             return self.get_all_cores_mask()
-        if spec in ("P_CORES", "PERFORMANCE"):
+        if spec in ("P_CORES", "PERFORMANCE", "CCD0", "3D_CACHE", "CCD0_X3D"):
             return self.get_p_cores_mask()
-        if spec in ("E_CORES", "EFFICIENCY"):
+        if spec in ("E_CORES", "EFFICIENCY", "CCD1", "FREQUENCY", "CCD1_FREQ"):
             return self.get_e_cores_mask()
 
         # Handle hex or decimal numbers

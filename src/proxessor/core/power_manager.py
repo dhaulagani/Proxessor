@@ -36,6 +36,39 @@ class PowerPlanManager:
             self.powrprof = None
         self.active_scheme_name: Optional[str] = None
 
+    def get_active_scheme_uuid(self) -> Optional[uuid.UUID]:
+        """Returns the UUID of the currently active Windows power scheme."""
+        if not self.powrprof:
+            return None
+        guid_ptr = ctypes.POINTER(GUID)()
+        try:
+            res = self.powrprof.PowerGetActiveScheme(None, ctypes.byref(guid_ptr))
+            if res == 0 and guid_ptr:
+                raw_bytes = bytes(guid_ptr.contents)
+                ctypes.windll.kernel32.LocalFree(guid_ptr)
+                return uuid.UUID(bytes_le=raw_bytes)
+            return None
+        except Exception:
+            return None
+
+    def set_active_scheme_uuid(self, u: uuid.UUID) -> bool:
+        """Sets the active system power plan by raw UUID."""
+        if not self.powrprof:
+            return False
+        guid_struct = uuid_to_guid_struct(u)
+        try:
+            res = self.powrprof.PowerSetActiveScheme(None, ctypes.byref(guid_struct))
+            if res == 0:
+                # Find matching friendly name if any
+                for name, target_uuid in SCHEME_GUID_MAP.items():
+                    if target_uuid == u:
+                        self.active_scheme_name = name
+                        break
+                return True
+            return False
+        except Exception:
+            return False
+
     def set_active_scheme(self, scheme_name: str) -> bool:
         """Sets the active system power plan by friendly name."""
         if not self.powrprof:
@@ -45,12 +78,4 @@ class PowerPlanManager:
         if not u:
             return False
 
-        guid_struct = uuid_to_guid_struct(u)
-        try:
-            res = self.powrprof.PowerSetActiveScheme(None, ctypes.byref(guid_struct))
-            if res == 0:
-                self.active_scheme_name = scheme_name.upper()
-                return True
-            return False
-        except Exception:
-            return False
+        return self.set_active_scheme_uuid(u)

@@ -39,9 +39,69 @@ type PowerSetActiveSchemeFn = unsafe extern "system" fn(
     scheme_guid: *const windows_sys::core::GUID,
 ) -> u32;
 
+type PowerGetActiveSchemeFn = unsafe extern "system" fn(
+    user_root_power_key: *mut c_void,
+    active_policy_guid: *mut *mut windows_sys::core::GUID,
+) -> u32;
+
+#[repr(C)]
+struct LastInputInfo {
+    cb_size: u32,
+    dw_time: u32,
+}
+
+type GetLastInputInfoFn = unsafe extern "system" fn(plii: *mut LastInputInfo) -> i32;
+
+type LocalFreeFn = unsafe extern "system" fn(hmem: *mut c_void) -> *mut c_void;
+
 pub struct Win32Kernel;
 
 impl Win32Kernel {
+    pub fn terminate_process(pid: u32) -> bool {
+        unsafe {
+            let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
+            if handle.is_null() {
+                return false;
+            }
+            let res = TerminateProcess(handle, 1);
+            CloseHandle(handle);
+            res != 0
+        }
+    }
+
+    pub fn get_system_idle_seconds() -> f32 {
+        unsafe {
+            let user32 = LoadLibraryA(b"user32.dll\0".as_ptr());
+            if user32.is_null() {
+                return 0.0;
+            }
+            let proc = GetProcAddress(user32, b"GetLastInputInfo\0".as_ptr());
+            if proc.is_none() {
+                FreeLibrary(user32);
+                return 0.0;
+            }
+            let get_fn: GetLastInputInfoFn = std::mem::transmute(proc.unwrap());
+            let mut lii = LastInputInfo {
+                cb_size: size_of::<LastInputInfo>() as u32,
+                dw_time: 0,
+            };
+            let res = get_fn(&mut lii);
+            FreeLibrary(user32);
+
+            if res != 0 {
+                let now = GetTickCount64();
+                let last = lii.dw_time as u64;
+                if now >= last {
+                    ((now - last) as f32) / 1000.0
+                } else {
+                    0.0
+                }
+            } else {
+                0.0
+            }
+        }
+    }
+
     pub fn get_foreground_pid() -> Option<u32> {
         unsafe {
             let hwnd = GetForegroundWindow();
@@ -213,6 +273,57 @@ impl Win32Kernel {
         }
     }
 
+    pub fn get_active_power_scheme_guid() -> Option<windows_sys::core::GUID> {
+        unsafe {
+            let powrprof = LoadLibraryA(b"powrprof.dll\0".as_ptr());
+            if powrprof.is_null() {
+                return None;
+            }
+            let proc = GetProcAddress(powrprof, b"PowerGetActiveScheme\0".as_ptr());
+            if proc.is_none() {
+                FreeLibrary(powrprof);
+                return None;
+            }
+            let get_fn: PowerGetActiveSchemeFn = std::mem::transmute(proc.unwrap());
+            let mut guid_ptr: *mut windows_sys::core::GUID = std::ptr::null_mut();
+            let res = get_fn(std::ptr::null_mut(), &mut guid_ptr);
+            FreeLibrary(powrprof);
+
+            if res == 0 && !guid_ptr.is_null() {
+                let guid = *guid_ptr;
+                let k32 = LoadLibraryA(b"kernel32.dll\0".as_ptr());
+                if !k32.is_null() {
+                    if let Some(free_proc) = GetProcAddress(k32, b"LocalFree\0".as_ptr()) {
+                        let free_fn: LocalFreeFn = std::mem::transmute(free_proc);
+                        free_fn(guid_ptr as *mut c_void);
+                    }
+                    FreeLibrary(k32);
+                }
+                Some(guid)
+            } else {
+                None
+            }
+        }
+    }
+
+    pub fn set_active_power_scheme_guid(guid: &windows_sys::core::GUID) -> bool {
+        unsafe {
+            let powrprof = LoadLibraryA(b"powrprof.dll\0".as_ptr());
+            if powrprof.is_null() {
+                return false;
+            }
+            let proc = GetProcAddress(powrprof, b"PowerSetActiveScheme\0".as_ptr());
+            if proc.is_none() {
+                FreeLibrary(powrprof);
+                return false;
+            }
+            let power_fn: PowerSetActiveSchemeFn = std::mem::transmute(proc.unwrap());
+            let res = power_fn(std::ptr::null_mut(), guid);
+            FreeLibrary(powrprof);
+            res == 0
+        }
+    }
+
     pub fn set_active_power_scheme(scheme_name: &str) -> bool {
         let guid_str = match scheme_name.to_uppercase().as_str() {
             "BALANCED" => "381b4222-f694-41f0-9685-ff5bb260df2e",
@@ -223,21 +334,7 @@ impl Win32Kernel {
         };
 
         if let Ok(guid) = parse_guid(guid_str) {
-            unsafe {
-                let powrprof = LoadLibraryA(b"powrprof.dll\0".as_ptr());
-                if powrprof.is_null() {
-                    return false;
-                }
-                let proc = GetProcAddress(powrprof, b"PowerSetActiveScheme\0".as_ptr());
-                if proc.is_none() {
-                    FreeLibrary(powrprof);
-                    return false;
-                }
-                let power_fn: PowerSetActiveSchemeFn = std::mem::transmute(proc.unwrap());
-                let res = power_fn(std::ptr::null_mut(), &guid);
-                FreeLibrary(powrprof);
-                res == 0
-            }
+            Self::set_active_power_scheme_guid(&guid)
         } else {
             false
         }

@@ -69,8 +69,8 @@ fn cmd_run(config_path: &str, dry_run: bool) {
     loop {
         let stats = gov.tick(dry_run);
         print!(
-            "\r[TICK] Monitored: {:<3} | RAM: {:>4.1}% | ProBalance: {:<2} | Watchdogs: {:<2}   ",
-            stats.monitored_processes, stats.ram_percent, stats.probalance_actions, stats.watchdog_actions
+            "\r[TICK] Monitored: {:<3} | RAM: {:>4.1}% | ProBalance: {:<2} | Watchdogs: {:<2} | Blocked: {:<2} | Idle: {:<5}   ",
+            stats.monitored_processes, stats.ram_percent, stats.probalance_actions, stats.watchdog_actions, stats.disallowed_kills, if stats.is_idle { "YES" } else { "NO" }
         );
         use std::io::Write;
         std::io::stdout().flush().unwrap();

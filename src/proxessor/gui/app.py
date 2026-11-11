@@ -139,6 +139,7 @@ class ProxessorApp(tk.Tk):
         # State Variables
         self.var_active_only = tk.BooleanVar(value=False)
         self.var_restrained_only = tk.BooleanVar(value=False)
+        self.var_tree_view = tk.BooleanVar(value=False)
         self.var_probalance_enabled = tk.BooleanVar(value=True)
         self.var_always_on_top = tk.BooleanVar(value=False)
         self.var_close_to_tray = tk.BooleanVar(value=True)
@@ -354,6 +355,20 @@ class ProxessorApp(tk.Tk):
             command=self._render_process_table
         )
         chk_act.pack(side=tk.LEFT, padx=4)
+
+        chk_tree = tk.Checkbutton(
+            toolbar,
+            text="Tree View",
+            variable=self.var_tree_view,
+            bg=WIN_SURFACE_ALT,
+            fg=WIN_TEXT,
+            activebackground=WIN_SURFACE_ALT,
+            activeforeground=WIN_TEXT,
+            selectcolor=WIN_BG,
+            font=FONT_UI,
+            command=self._render_process_table
+        )
+        chk_tree.pack(side=tk.LEFT, padx=4)
 
         # Separator
         sep1 = tk.Frame(toolbar, width=1, bg=WIN_BORDER, height=20)
@@ -754,6 +769,7 @@ class ProxessorApp(tk.Tk):
         self.menu.add_command(label="Toggle ProBalance Exclusion", command=self._on_toggle_exclude)
 
         self.menu.add_separator()
+        self.menu.add_command(label="Inspect Handles & Loaded DLLs...", command=self._open_handles_dlls_inspector)
         self.menu.add_command(label="Open File Location (Explorer)", command=self._open_file_location)
         self.menu.add_command(label="Restart Process", command=self._on_restart_single)
         self.menu.add_command(label="End Process (Del)", command=self._on_kill_single)
@@ -842,6 +858,9 @@ class ProxessorApp(tk.Tk):
         if self.var_restrained_only.get():
             procs = [p for p in procs if p["is_restrained"]]
 
+        if self.var_tree_view.get():
+            procs = self.controller.build_tree_hierarchy(procs)
+
         cur_sel = self.tree.selection()
         selected_iid = cur_sel[0] if cur_sel else None
 
@@ -859,9 +878,10 @@ class ProxessorApp(tk.Tk):
                 status_text = "Excluded (PB)"
 
             iid = str(p["pid"])
+            display_name = p.get("display_name", p["name"])
             self.tree.insert("", tk.END, iid=iid, tags=(tag,), values=(
                 p["pid"],
-                p["name"],
+                display_name,
                 f"{p['cpu_percent']:.1f}",
                 f"{p['memory_mb']:.1f}",
                 p["priority"],
@@ -969,6 +989,125 @@ class ProxessorApp(tk.Tk):
                 os.system(f'explorer /select,"{path}"')
         except Exception as e:
             messagebox.showerror("Error", f"Could not open location: {e}")
+
+    def _open_handles_dlls_inspector(self):
+        if not self.selected_pid:
+            return
+        pid = self.selected_pid
+        name = self.selected_name or f"PID {pid}"
+
+        dialog = tk.Toplevel(self)
+        dialog.title(f"Process Inspector — {name} (PID: {pid})")
+        dialog.geometry("780x520")
+        dialog.minsize(640, 400)
+        dialog.configure(bg=WIN_BG)
+        dialog.transient(self)
+
+        # Apply immersive dark mode
+        try:
+            hwnd = ctypes.windll.user32.GetParent(dialog.winfo_id()) or dialog.winfo_id()
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, 20, ctypes.byref(ctypes.c_int(1)), ctypes.sizeof(ctypes.c_int)
+            )
+        except Exception:
+            pass
+
+        # Header Info Strip
+        hdr = tk.Frame(dialog, bg=WIN_SURFACE_ALT, height=36, highlightthickness=1, highlightbackground=WIN_BORDER)
+        hdr.pack(fill=tk.X, side=tk.TOP)
+        hdr.pack_propagate(False)
+
+        tk.Label(hdr, text=f"Target: {name}", bg=WIN_SURFACE_ALT, fg=WIN_TEXT, font=FONT_UI_BOLD).pack(side=tk.LEFT, padx=10, pady=6)
+        tk.Label(hdr, text=f"PID: {pid}", bg=WIN_SURFACE_ALT, fg=WIN_TEXT_MUTED, font=FONT_MONO).pack(side=tk.LEFT, padx=8, pady=6)
+
+        gdi_cnt, usr_cnt = self.controller.win32.get_process_gui_resources(pid)
+        tk.Label(hdr, text=f"GDI Handles: {gdi_cnt}  |  USER Handles: {usr_cnt}", bg=WIN_SURFACE_ALT, fg=WIN_TEXT_MUTED, font=FONT_UI).pack(side=tk.RIGHT, padx=12, pady=6)
+
+        # Notebook (DLLs vs Handles)
+        nb = ttk.Notebook(dialog)
+        nb.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+
+        tab_dlls = ttk.Frame(nb)
+        tab_handles = ttk.Frame(nb)
+        nb.add(tab_dlls, text=" Loaded Modules (.DLLs) ")
+        nb.add(tab_handles, text=" Open Handles (Files & Sockets) ")
+
+        # --- TAB 1: DLLs ---
+        dll_bar = tk.Frame(tab_dlls, bg=WIN_SURFACE, height=30)
+        dll_bar.pack(fill=tk.X, side=tk.TOP, padx=4, pady=3)
+        tk.Label(dll_bar, text="Filter DLLs:", bg=WIN_SURFACE, fg=WIN_TEXT_MUTED, font=FONT_UI).pack(side=tk.LEFT, padx=4)
+        dll_filter = tk.Entry(dll_bar, bg=WIN_BG, fg=WIN_TEXT, relief="flat", highlightthickness=1, highlightbackground=WIN_BORDER, font=FONT_UI, width=28)
+        dll_filter.pack(side=tk.LEFT, padx=4, pady=2)
+
+        lbl_dll_count = tk.Label(dll_bar, text="", bg=WIN_SURFACE, fg=WIN_TEXT_MUTED, font=FONT_UI)
+        lbl_dll_count.pack(side=tk.RIGHT, padx=8)
+
+        dll_tree_frame = tk.Frame(tab_dlls, bg=WIN_BG)
+        dll_tree_frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=2)
+        dll_cols = ("name", "path", "rss")
+        tree_dll = ttk.Treeview(dll_tree_frame, columns=dll_cols, show="headings", selectmode="browse")
+        tree_dll.heading("name", text="MODULE NAME")
+        tree_dll.heading("path", text="FULL BASE PATH")
+        tree_dll.heading("rss", text="RSS (KB)")
+        tree_dll.column("name", width=200, anchor="w")
+        tree_dll.column("path", width=460, anchor="w")
+        tree_dll.column("rss", width=80, anchor="e")
+
+        sb_dll = ttk.Scrollbar(dll_tree_frame, orient=tk.VERTICAL, command=tree_dll.yview)
+        tree_dll.configure(yscrollcommand=sb_dll.set)
+        tree_dll.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        sb_dll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # --- TAB 2: Handles ---
+        h_bar = tk.Frame(tab_handles, bg=WIN_SURFACE, height=30)
+        h_bar.pack(fill=tk.X, side=tk.TOP, padx=4, pady=3)
+        tk.Label(h_bar, text="Filter Handles:", bg=WIN_SURFACE, fg=WIN_TEXT_MUTED, font=FONT_UI).pack(side=tk.LEFT, padx=4)
+        h_filter = tk.Entry(h_bar, bg=WIN_BG, fg=WIN_TEXT, relief="flat", highlightthickness=1, highlightbackground=WIN_BORDER, font=FONT_UI, width=28)
+        h_filter.pack(side=tk.LEFT, padx=4, pady=2)
+
+        lbl_h_count = tk.Label(h_bar, text="", bg=WIN_SURFACE, fg=WIN_TEXT_MUTED, font=FONT_UI)
+        lbl_h_count.pack(side=tk.RIGHT, padx=8)
+
+        h_tree_frame = tk.Frame(tab_handles, bg=WIN_BG)
+        h_tree_frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=2)
+        h_cols = ("type", "target", "detail")
+        tree_h = ttk.Treeview(h_tree_frame, columns=h_cols, show="headings", selectmode="browse")
+        tree_h.heading("type", text="TYPE")
+        tree_h.heading("target", text="PATH / ENDPOINT")
+        tree_h.heading("detail", text="DETAIL / STATUS")
+        tree_h.column("type", width=90, anchor="center")
+        tree_h.column("target", width=530, anchor="w")
+        tree_h.column("detail", width=120, anchor="w")
+
+        sb_h = ttk.Scrollbar(h_tree_frame, orient=tk.VERTICAL, command=tree_h.yview)
+        tree_h.configure(yscrollcommand=sb_h.set)
+        tree_h.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        sb_h.pack(side=tk.RIGHT, fill=tk.Y)
+
+        raw_modules = self.controller.get_process_modules(pid)
+        raw_handles = self.controller.get_process_handles(pid)
+
+        def populate_dlls():
+            q = dll_filter.get().strip().lower()
+            tree_dll.delete(*tree_dll.get_children())
+            filtered = [m for m in raw_modules if (not q or q in m["name"].lower() or q in m["path"].lower())]
+            for m in filtered:
+                tree_dll.insert("", tk.END, values=(m["name"], m["path"], m["rss_kb"]))
+            lbl_dll_count.configure(text=f"Total: {len(filtered)} / {len(raw_modules)} DLLs")
+
+        def populate_handles():
+            q = h_filter.get().strip().lower()
+            tree_h.delete(*tree_h.get_children())
+            filtered = [h for h in raw_handles if (not q or q in h["target"].lower() or q in h["detail"].lower() or q in h["type"].lower())]
+            for h in filtered:
+                tree_h.insert("", tk.END, values=(h["type"], h["target"], h["detail"]))
+            lbl_h_count.configure(text=f"Total: {len(filtered)} / {len(raw_handles)} Handles")
+
+        dll_filter.bind("<KeyRelease>", lambda e: populate_dlls())
+        h_filter.bind("<KeyRelease>", lambda e: populate_handles())
+
+        populate_dlls()
+        populate_handles()
 
     def _on_smart_trim(self):
         trimmed = self.controller.trim_all()

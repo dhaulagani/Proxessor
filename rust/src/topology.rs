@@ -65,8 +65,8 @@ impl CPUTopology {
     pub fn parse_affinity(&self, spec: &str) -> usize {
         match spec.trim().to_uppercase().as_str() {
             "ALL_CORES" | "ALL" => self.get_all_cores_mask(),
-            "P_CORES" | "PERFORMANCE" => self.get_p_cores_mask(),
-            "E_CORES" | "EFFICIENCY" => self.get_e_cores_mask(),
+            "P_CORES" | "PERFORMANCE" | "CCD0" | "3D_CACHE" | "CCD0_X3D" => self.get_p_cores_mask(),
+            "E_CORES" | "EFFICIENCY" | "CCD1" | "FREQUENCY" | "CCD1_FREQ" => self.get_e_cores_mask(),
             hex if hex.starts_with("0X") => {
                 usize::from_str_radix(&hex[2..], 16).unwrap_or_else(|_| self.get_all_cores_mask())
             }

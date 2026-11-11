@@ -22,6 +22,15 @@ pub struct GovernorEngine {
     pub rules: Vec<CompiledRule>,
     pub applied_cache: HashMap<u32, AppliedState>,
     pub last_smart_trim: Instant,
+    pub boosted_fg_pid: Option<u32>,
+    pub boosted_fg_name: Option<String>,
+    pub original_fg_priority: Option<String>,
+    pub base_power_scheme_guid: Option<windows_sys::core::GUID>,
+    pub active_power_scheme_target: Option<String>,
+    pub disallowed_patterns: Vec<Regex>,
+    pub is_idle: bool,
+    pub pre_idle_scheme_guid: Option<windows_sys::core::GUID>,
+    pub disallowed_kills: usize,
 }
 
 #[derive(Default, Clone)]
@@ -37,6 +46,8 @@ pub struct TickStats {
     pub probalance_actions: usize,
     pub watchdog_actions: usize,
     pub ram_percent: f32,
+    pub disallowed_kills: usize,
+    pub is_idle: bool,
 }
 
 impl GovernorEngine {
@@ -55,6 +66,18 @@ impl GovernorEngine {
             }
         }
 
+        let mut disallowed_patterns = Vec::new();
+        for dis in &config.disallowed_processes {
+            let pat = if dis.starts_with("(?i)") || dis.contains('\\') || dis.contains('*') {
+                dis.clone()
+            } else {
+                format!("(?i)^{}$", regex::escape(dis))
+            };
+            if let Ok(reg) = Regex::new(&pat) {
+                disallowed_patterns.push(reg);
+            }
+        }
+
         Self {
             config,
             topology,
@@ -63,6 +86,15 @@ impl GovernorEngine {
             rules: compiled_rules,
             applied_cache: HashMap::new(),
             last_smart_trim: Instant::now(),
+            boosted_fg_pid: None,
+            boosted_fg_name: None,
+            original_fg_priority: None,
+            base_power_scheme_guid: None,
+            active_power_scheme_target: None,
+            disallowed_patterns,
+            is_idle: false,
+            pre_idle_scheme_guid: None,
+            disallowed_kills: 0,
         }
     }
 
@@ -78,7 +110,19 @@ impl GovernorEngine {
         // Enumerate running processes via Toolhelp32
         let snapshots = self.enumerate_system_processes();
 
+        // 0. Enforce Disallowed Processes (Execution Blocker)
+        for snap in &snapshots {
+            let is_banned = self.disallowed_patterns.iter().any(|p| p.is_match(&snap.name));
+            if is_banned {
+                if !dry_run {
+                    Win32Kernel::terminate_process(snap.pid);
+                }
+                self.disallowed_kills += 1;
+            }
+        }
+
         // 1. Evaluate Persistent Rules
+        let mut game_mode_requests = Vec::new();
         for snap in &snapshots {
             let matched_rule = self.match_rule(&snap.name).cloned();
 
@@ -123,8 +167,75 @@ impl GovernorEngine {
                 }
 
                 if let Some(ref scheme) = rule.power_scheme {
+                    game_mode_requests.push(scheme.clone());
+                }
+            }
+        }
+
+        // 1b. Dynamic Game Mode / High Performance Auto-Switching (BHP Parity)
+        if let Some(target_scheme) = game_mode_requests.first() {
+            if self.active_power_scheme_target.as_ref() != Some(target_scheme) {
+                if self.base_power_scheme_guid.is_none() {
+                    self.base_power_scheme_guid = Win32Kernel::get_active_power_scheme_guid();
+                }
+                if !dry_run {
+                    Win32Kernel::set_active_power_scheme(target_scheme);
+                }
+                self.active_power_scheme_target = Some(target_scheme.clone());
+            }
+        } else if self.active_power_scheme_target.is_some() {
+            if !dry_run {
+                if let Some(ref guid) = self.base_power_scheme_guid {
+                    Win32Kernel::set_active_power_scheme_guid(guid);
+                } else {
+                    Win32Kernel::set_active_power_scheme("BALANCED");
+                }
+            }
+            self.active_power_scheme_target = None;
+            self.base_power_scheme_guid = None;
+        }
+
+        // 1c. Foreground Window Boost (Quantum Prioritizer)
+        if self.config.engine.foreground_boost_enabled {
+            if foreground_pid != self.boosted_fg_pid {
+                // Restore previous boosted process
+                if let Some(prev_pid) = self.boosted_fg_pid {
+                    let restore_prio = if let Some(ref prev_name) = self.boosted_fg_name {
+                        self.match_rule(prev_name)
+                            .and_then(|r| r.priority.clone())
+                            .unwrap_or_else(|| self.original_fg_priority.clone().unwrap_or_else(|| "NORMAL".to_string()))
+                    } else {
+                        self.original_fg_priority.clone().unwrap_or_else(|| "NORMAL".to_string())
+                    };
+
                     if !dry_run {
-                        Win32Kernel::set_active_power_scheme(scheme);
+                        Win32Kernel::set_process_priority(prev_pid, &restore_prio);
+                    }
+                    self.boosted_fg_pid = None;
+                    self.boosted_fg_name = None;
+                    self.original_fg_priority = None;
+                }
+
+                // Elevate new foreground PID if valid and not excluded
+                if let Some(fg_pid) = foreground_pid {
+                    if fg_pid > 4 {
+                        if let Some(fg_snap) = snapshots.iter().find(|s| s.pid == fg_pid) {
+                            let lower = fg_snap.name.to_lowercase();
+                            let is_excluded = matches!(
+                                lower.as_str(),
+                                "dwm.exe" | "explorer.exe" | "csrss.exe" | "system" | "system idle process" | "proxessor.exe"
+                            );
+
+                            if !is_excluded {
+                                let boost_prio = &self.config.engine.foreground_boost_priority;
+                                self.original_fg_priority = Some("NORMAL".to_string());
+                                self.boosted_fg_pid = Some(fg_pid);
+                                self.boosted_fg_name = Some(fg_snap.name.clone());
+                                if !dry_run {
+                                    Win32Kernel::set_process_priority(fg_pid, boost_prio);
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -211,11 +322,40 @@ impl GovernorEngine {
             }
         }
 
+        // 5. Dynamic IdleSaver (Eco-Efficiency Mode)
+        if self.config.engine.idle_saver_enabled {
+            let idle_sec = Win32Kernel::get_system_idle_seconds();
+            let threshold = self.config.engine.idle_saver_threshold_seconds as f32;
+            if idle_sec >= threshold {
+                if !self.is_idle {
+                    if self.base_power_scheme_guid.is_none() {
+                        self.pre_idle_scheme_guid = Win32Kernel::get_active_power_scheme_guid();
+                    }
+                    if !dry_run {
+                        Win32Kernel::set_active_power_scheme("POWER_SAVER");
+                    }
+                    self.is_idle = true;
+                }
+            } else if self.is_idle {
+                if !dry_run {
+                    if let Some(ref guid) = self.pre_idle_scheme_guid {
+                        Win32Kernel::set_active_power_scheme_guid(guid);
+                    } else {
+                        Win32Kernel::set_active_power_scheme("BALANCED");
+                    }
+                }
+                self.is_idle = false;
+                self.pre_idle_scheme_guid = None;
+            }
+        }
+
         TickStats {
             monitored_processes: snapshots.len(),
             probalance_actions: pb_actions.len(),
             watchdog_actions: wd_actions.len(),
             ram_percent,
+            disallowed_kills: self.disallowed_kills,
+            is_idle: self.is_idle,
         }
     }
 

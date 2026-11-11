@@ -196,3 +196,26 @@ class Win32ProcessAPI:
     def get_system_ram_percent(self) -> float:
         """Returns the current system RAM utilization percentage."""
         return psutil.virtual_memory().percent
+
+    def get_system_idle_seconds(self) -> float:
+        """Returns the number of seconds since the last user keyboard or mouse input."""
+        class LASTINPUTINFO(ctypes.Structure):
+            _fields_ = [("cbSize", wintypes.UINT), ("dwTime", wintypes.DWORD)]
+
+        lii = LASTINPUTINFO(cbSize=ctypes.sizeof(LASTINPUTINFO))
+        if self.user32.GetLastInputInfo(ctypes.byref(lii)):
+            millis = self.kernel32.GetTickCount() - lii.dwTime
+            return max(0.0, millis / 1000.0)
+        return 0.0
+
+    def get_process_gui_resources(self, pid: int) -> Tuple[int, int]:
+        """Returns (gdi_objects_count, user_objects_count) allocated by process."""
+        h_process = self.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not h_process:
+            return (0, 0)
+        try:
+            gdi = self.user32.GetGuiResources(h_process, 0)
+            usr = self.user32.GetGuiResources(h_process, 1)
+            return (int(gdi), int(usr))
+        finally:
+            self.kernel32.CloseHandle(h_process)

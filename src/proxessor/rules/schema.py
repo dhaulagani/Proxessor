@@ -16,6 +16,9 @@ class ProcessRule:
 class EngineConfig:
     poll_interval_ms: int = 1000
     foreground_boost_enabled: bool = True
+    foreground_boost_priority: str = "ABOVE_NORMAL"
+    idle_saver_enabled: bool = False
+    idle_saver_threshold_seconds: float = 300.0
     smart_trim_enabled: bool = True
     smart_trim_threshold_percent: float = 85.0
     smart_trim_interval_seconds: float = 300.0

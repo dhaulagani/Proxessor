@@ -3,6 +3,9 @@
   "engine": {
     "poll_interval_ms": 1000,
     "foreground_boost_enabled": true,
+    "foreground_boost_priority": "ABOVE_NORMAL",
+    "idle_saver_enabled": false,
+    "idle_saver_threshold_seconds": 300,
     "smart_trim_enabled": true,
     "smart_trim_threshold_percent": 85,
     "smart_trim_interval_seconds": 300
@@ -73,5 +76,9 @@
       "max_memory_mb": 4096,
       "action": "TRIM_WORKING_SET"
     }
+  ],
+  "disallowed_processes": [
+    "telemetry_bloatware.exe",
+    "unwanted_crypto_miner.exe"
   ]
 }

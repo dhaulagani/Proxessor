@@ -1,6 +1,7 @@
 import time
 import psutil
-from typing import Dict, Set, Optional
+from typing import Dict, Set, Optional, List
+import uuid
 from src.proxessor.core.win32_api import Win32ProcessAPI
 from src.proxessor.core.cpu_topology import CPUTopology
 from src.proxessor.core.power_manager import PowerPlanManager
@@ -8,10 +9,15 @@ from src.proxessor.core.probalance import ProBalanceEngine
 from src.proxessor.core.watchdog import WatchdogEngine
 from src.proxessor.rules.manager import RuleManager
 
+SYSTEM_PROCESS_EXCLUSIONS = {
+    "dwm.exe", "explorer.exe", "csrss.exe", "system", "system idle process",
+    "proxessor.exe", "python.exe", "pythonw.exe", "lsass.exe", "smss.exe", "services.exe"
+}
+
 class GovernorEngine:
     """Master background optimization daemon that orchestrates Win32 kernel calls,
-
-    ProBalance heuristics, CPU topology rules, and memory trimming."""
+    ProBalance heuristics, CPU topology rules, memory trimming, Foreground Window Boost,
+    and Dynamic Game Mode Power Switching."""
 
     def __init__(self, config_path: str, dry_run: bool = False):
         self.config_path = config_path
@@ -28,6 +34,22 @@ class GovernorEngine:
         self.applied_cache: Dict[int, Dict] = {}
         self.last_smart_trim_time = 0.0
         self.current_foreground_pid: Optional[int] = None
+
+        # Foreground Boost state tracking
+        self.boosted_fg_pid: Optional[int] = None
+        self.boosted_fg_name: Optional[str] = None
+        self.original_fg_priorities: Dict[int, str] = {}
+
+        # Dynamic Game Mode / High Performance Auto-Switching state
+        self.base_power_scheme_uuid: Optional[uuid.UUID] = None
+        self.active_power_scheme_target: Optional[str] = None
+
+        # IdleSaver state
+        self.is_idle: bool = False
+        self.pre_idle_scheme_uuid: Optional[uuid.UUID] = None
+
+        # Disallowed processes kill counter
+        self.disallowed_kill_count: int = 0
 
     def tick(self):
         """Executes a single optimization and monitoring tick."""
@@ -74,7 +96,19 @@ class GovernorEngine:
         for p in dead_pids:
             del self.applied_cache[p]
 
+        # 2b. Disallowed Processes Execution Blocker (Immediate Termination)
+        for snap in snapshots:
+            if self.rule_manager.is_disallowed(snap["name"]):
+                if not self.dry_run:
+                    try:
+                        p = psutil.Process(snap["pid"])
+                        p.terminate()
+                    except Exception:
+                        pass
+                self.disallowed_kill_count += 1
+
         # 3. Apply Persistent Rules
+        game_mode_requests = []
         for snap in snapshots:
             pid = snap["pid"]
             name = snap["name"]
@@ -118,9 +152,80 @@ class GovernorEngine:
                         self.win32.set_process_power_throttling(pid, rule.power_throttling_eco_qos)
                     cached["eco_qos"] = rule.power_throttling_eco_qos
 
-                # Power Scheme Trigger
-                if rule.power_scheme and not self.dry_run:
-                    self.power_manager.set_active_scheme(rule.power_scheme)
+                # Power Scheme Trigger collection
+                if rule.power_scheme:
+                    game_mode_requests.append(rule.power_scheme)
+
+        # 3b. Dynamic Game Mode / High Performance Auto-Switching (BHP Parity)
+        if game_mode_requests:
+            target_scheme = game_mode_requests[0]
+            if self.active_power_scheme_target != target_scheme:
+                if self.base_power_scheme_uuid is None:
+                    self.base_power_scheme_uuid = self.power_manager.get_active_scheme_uuid()
+                if not self.dry_run:
+                    self.power_manager.set_active_scheme(target_scheme)
+                self.active_power_scheme_target = target_scheme
+        else:
+            if self.active_power_scheme_target is not None:
+                # Revert back to original base scheme
+                if not self.dry_run:
+                    if self.base_power_scheme_uuid is not None:
+                        self.power_manager.set_active_scheme_uuid(self.base_power_scheme_uuid)
+                    else:
+                        self.power_manager.set_active_scheme("BALANCED")
+                self.active_power_scheme_target = None
+                self.base_power_scheme_uuid = None
+
+        # 3c. Foreground Window Boost (Quantum Prioritizer)
+        if self.rule_manager.engine_config.foreground_boost_enabled:
+            fg_pid = self.current_foreground_pid
+            if fg_pid != self.boosted_fg_pid:
+                # Restore previously boosted foreground process
+                if self.boosted_fg_pid is not None:
+                    prev_name = self.boosted_fg_name
+                    prev_rule = self.rule_manager.match_rule(prev_name) if prev_name else None
+                    restore_prio = (
+                        prev_rule.priority
+                        if (prev_rule and prev_rule.priority)
+                        else self.original_fg_priorities.get(self.boosted_fg_pid, "NORMAL")
+                    )
+                    if not self.dry_run:
+                        self.win32.set_process_priority(self.boosted_fg_pid, restore_prio)
+                    self.original_fg_priorities.pop(self.boosted_fg_pid, None)
+                    self.boosted_fg_pid = None
+                    self.boosted_fg_name = None
+
+                # Elevate new foreground process if valid and not excluded
+                if fg_pid and fg_pid > 4:
+                    fg_snap = next((s for s in snapshots if s["pid"] == fg_pid), None)
+                    if fg_snap and fg_snap["name"].lower() not in SYSTEM_PROCESS_EXCLUSIONS:
+                        boost_prio = self.rule_manager.engine_config.foreground_boost_priority or "ABOVE_NORMAL"
+                        self.original_fg_priorities[fg_pid] = fg_snap["priority"]
+                        self.boosted_fg_pid = fg_pid
+                        self.boosted_fg_name = fg_snap["name"]
+                        if not self.dry_run:
+                            self.win32.set_process_priority(fg_pid, boost_prio)
+
+        # 3d. Dynamic IdleSaver (Eco-Efficiency Mode)
+        if self.rule_manager.engine_config.idle_saver_enabled:
+            idle_sec = self.win32.get_system_idle_seconds()
+            threshold = self.rule_manager.engine_config.idle_saver_threshold_seconds
+            if idle_sec >= threshold:
+                if not self.is_idle:
+                    if self.base_power_scheme_uuid is None:
+                        self.pre_idle_scheme_uuid = self.power_manager.get_active_scheme_uuid()
+                    if not self.dry_run:
+                        self.power_manager.set_active_scheme("POWER_SAVER")
+                    self.is_idle = True
+            else:
+                if self.is_idle:
+                    if not self.dry_run:
+                        if self.pre_idle_scheme_uuid:
+                            self.power_manager.set_active_scheme_uuid(self.pre_idle_scheme_uuid)
+                        else:
+                            self.power_manager.set_active_scheme("BALANCED")
+                    self.is_idle = False
+                    self.pre_idle_scheme_uuid = None
 
         # 4. ProBalance Dynamic Priority Restraint
         pb_actions = self.probalance.evaluate(
@@ -165,7 +270,9 @@ class GovernorEngine:
             "system_cpu": system_cpu,
             "monitored_processes": len(snapshots),
             "probalance_actions": len(pb_actions),
-            "watchdog_actions": len(wd_actions)
+            "watchdog_actions": len(wd_actions),
+            "disallowed_kills": self.disallowed_kill_count,
+            "is_idle": self.is_idle
         }
 
     def run_forever(self):

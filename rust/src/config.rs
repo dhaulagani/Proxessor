@@ -6,12 +6,25 @@ pub struct EngineConfig {
     pub poll_interval_ms: u64,
     #[serde(default = "default_true")]
     pub foreground_boost_enabled: bool,
+    #[serde(default = "default_boost_priority")]
+    pub foreground_boost_priority: String,
+    #[serde(default = "default_false")]
+    pub idle_saver_enabled: bool,
+    #[serde(default = "default_idle_saver_threshold")]
+    pub idle_saver_threshold_seconds: u64,
     #[serde(default = "default_true")]
     pub smart_trim_enabled: bool,
     #[serde(default = "default_ram_threshold")]
     pub smart_trim_threshold_percent: f32,
     #[serde(default = "default_trim_interval")]
     pub smart_trim_interval_seconds: u64,
+}
+
+fn default_false() -> bool { false }
+fn default_idle_saver_threshold() -> u64 { 300 }
+
+fn default_boost_priority() -> String {
+    "ABOVE_NORMAL".to_string()
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -63,6 +76,8 @@ pub struct AppConfig {
     pub rules: Vec<ProcessRule>,
     #[serde(default)]
     pub watchdogs: Vec<WatchdogRule>,
+    #[serde(default)]
+    pub disallowed_processes: Vec<String>,
 }
 
 fn default_poll_interval() -> u64 { 1000 }
