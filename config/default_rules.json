@@ -61,6 +61,11 @@
       "memory_priority": 2,
       "power_throttling_eco_qos": true,
       "cpu_affinity": "ALL_CORES"
+    },
+    {
+      "name": "Custom Rule for RobloxStudioBeta.exe",
+      "pattern": "(?i)RobloxStudioBeta.exe",
+      "priority": "ABOVE_NORMAL"
     }
   ],
   "watchdogs": [

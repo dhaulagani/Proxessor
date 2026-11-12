@@ -131,8 +131,14 @@ class ProxessorApp(tk.Tk):
         self.controller = GUIController(config_path)
         self.selected_pid: Optional[int] = None
         self.selected_name: str = ""
-        self.sort_col = "cpu_percent"
+        self.sort_col = "cpu"
         self.sort_desc = True
+        self.sock_sort_col = "pid"
+        self.sock_sort_desc = False
+        self.cached_conns = []
+        self.lock_sort_col = "pid"
+        self.lock_sort_desc = False
+        self.cached_lockers = []
         self.polling_active = True
         self.tray_notified = False
 
@@ -501,7 +507,7 @@ class ProxessorApp(tk.Tk):
             selectmode="browse"
         )
 
-        headers = [
+        self.process_headers = [
             ("pid", "PID", 70, "e"),
             ("name", "Process Name", 250, "w"),
             ("cpu", "CPU %", 75, "e"),
@@ -512,9 +518,11 @@ class ProxessorApp(tk.Tk):
             ("status", "Status", 130, "w")
         ]
 
-        for col_id, title, width, align in headers:
+        for col_id, title, width, align in self.process_headers:
             self.tree.heading(col_id, text=title, command=lambda c=col_id: self._sort_table(c))
             self.tree.column(col_id, width=width, anchor=align)
+
+        self._update_column_headers()
 
         v_scroll = ttk.Scrollbar(container, orient=tk.VERTICAL, command=self.tree.yview)
         self.tree.configure(yscrollcommand=v_scroll.set)
@@ -605,19 +613,20 @@ class ProxessorApp(tk.Tk):
         cols = ("proto", "local", "remote", "state", "name", "pid")
         self.socket_tree = ttk.Treeview(container, columns=cols, show="headings", selectmode="browse")
 
-        self.socket_tree.heading("proto", text="PROTO")
-        self.socket_tree.heading("local", text="LOCAL ENDPOINT")
-        self.socket_tree.heading("remote", text="REMOTE ENDPOINT")
-        self.socket_tree.heading("state", text="STATE")
-        self.socket_tree.heading("name", text="PROCESS NAME")
-        self.socket_tree.heading("pid", text="PID")
+        self.socket_headers = [
+            ("proto", "PROTO", 65, "center"),
+            ("local", "LOCAL ENDPOINT", 180, "w"),
+            ("remote", "REMOTE ENDPOINT", 180, "w"),
+            ("state", "STATE", 110, "center"),
+            ("name", "PROCESS NAME", 180, "w"),
+            ("pid", "PID", 75, "e")
+        ]
 
-        self.socket_tree.column("proto", width=65, anchor="center")
-        self.socket_tree.column("local", width=180, anchor="w")
-        self.socket_tree.column("remote", width=180, anchor="w")
-        self.socket_tree.column("state", width=110, anchor="center")
-        self.socket_tree.column("name", width=180, anchor="w")
-        self.socket_tree.column("pid", width=75, anchor="e")
+        for col_id, title, width, align in self.socket_headers:
+            self.socket_tree.heading(col_id, text=title, command=lambda c=col_id: self._sort_socket_table(c))
+            self.socket_tree.column(col_id, width=width, anchor=align)
+
+        self._update_socket_headers()
 
         sb = ttk.Scrollbar(container, orient=tk.VERTICAL, command=self.socket_tree.yview)
         self.socket_tree.configure(yscrollcommand=sb.set)
@@ -652,15 +661,19 @@ class ProxessorApp(tk.Tk):
 
         cols = ("pid", "name", "kind", "service")
         self.lock_tree = ttk.Treeview(container, columns=cols, show="headings", selectmode="browse")
-        self.lock_tree.heading("pid", text="PID")
-        self.lock_tree.heading("name", text="APPLICATION / PROCESS")
-        self.lock_tree.heading("kind", text="TYPE")
-        self.lock_tree.heading("service", text="SERVICE NAME")
 
-        self.lock_tree.column("pid", width=80, anchor="e")
-        self.lock_tree.column("name", width=280, anchor="w")
-        self.lock_tree.column("kind", width=140, anchor="center")
-        self.lock_tree.column("service", width=180, anchor="w")
+        self.lock_headers = [
+            ("pid", "PID", 80, "e"),
+            ("name", "APPLICATION / PROCESS", 280, "w"),
+            ("kind", "TYPE", 140, "center"),
+            ("service", "SERVICE NAME", 180, "w")
+        ]
+
+        for col_id, title, width, align in self.lock_headers:
+            self.lock_tree.heading(col_id, text=title, command=lambda c=col_id: self._sort_lock_table(c))
+            self.lock_tree.column(col_id, width=width, anchor=align)
+
+        self._update_lock_headers()
 
         sb = ttk.Scrollbar(container, orient=tk.VERTICAL, command=self.lock_tree.yview)
         self.lock_tree.configure(yscrollcommand=sb.set)
@@ -885,9 +898,9 @@ class ProxessorApp(tk.Tk):
                 f"{p['cpu_percent']:.1f}",
                 f"{p['memory_mb']:.1f}",
                 p["priority"],
-                "All Cores",
+                p.get("affinity", "All Cores"),
                 p["threads"],
-                status_text
+                p.get("status_text", status_text)
             ))
 
         if selected_iid and self.tree.exists(selected_iid):
@@ -905,12 +918,23 @@ class ProxessorApp(tk.Tk):
             self.txt_journal.see(tk.END)
 
     def _sort_table(self, col: str):
-        if self.sort_col == col:
+        col_norm = col.lower()
+        if self.sort_col == col_norm:
             self.sort_desc = not self.sort_desc
         else:
-            self.sort_col = col
-            self.sort_desc = True
+            self.sort_col = col_norm
+            # Default to descending for numeric metrics (highest first), ascending for textual (A-Z)
+            self.sort_desc = (col_norm in ("cpu", "ram", "pid", "threads", "prio"))
+        self._update_column_headers()
         self._render_process_table()
+
+    def _update_column_headers(self):
+        arrow = " ▼" if self.sort_desc else " ▲"
+        for col_id, title, _, _ in getattr(self, "process_headers", []):
+            if col_id == self.sort_col:
+                self.tree.heading(col_id, text=f"{title}{arrow}")
+            else:
+                self.tree.heading(col_id, text=title)
 
     def _on_process_selected(self, event):
         sel = self.tree.selection()
@@ -1087,10 +1111,46 @@ class ProxessorApp(tk.Tk):
         raw_modules = self.controller.get_process_modules(pid)
         raw_handles = self.controller.get_process_handles(pid)
 
+        dll_sort = {"col": "name", "desc": False}
+        handles_sort = {"col": "type", "desc": False}
+
+        def on_sort_dlls(c):
+            if dll_sort["col"] == c:
+                dll_sort["desc"] = not dll_sort["desc"]
+            else:
+                dll_sort["col"] = c
+                dll_sort["desc"] = (c == "rss")
+            update_dll_headings()
+            populate_dlls()
+
+        def update_dll_headings():
+            arr = " ▼" if dll_sort["desc"] else " ▲"
+            for col_id, title in [("name", "MODULE NAME"), ("path", "FULL BASE PATH"), ("rss", "RSS (KB)")]:
+                tree_dll.heading(col_id, text=f"{title}{arr}" if col_id == dll_sort["col"] else title, command=lambda cid=col_id: on_sort_dlls(cid))
+
+        def on_sort_handles(c):
+            if handles_sort["col"] == c:
+                handles_sort["desc"] = not handles_sort["desc"]
+            else:
+                handles_sort["col"] = c
+                handles_sort["desc"] = False
+            update_handles_headings()
+            populate_handles()
+
+        def update_handles_headings():
+            arr = " ▼" if handles_sort["desc"] else " ▲"
+            for col_id, title in [("type", "TYPE"), ("target", "PATH / ENDPOINT"), ("detail", "DETAIL / STATUS")]:
+                tree_h.heading(col_id, text=f"{title}{arr}" if col_id == handles_sort["col"] else title, command=lambda cid=col_id: on_sort_handles(cid))
+
+        update_dll_headings()
+        update_handles_headings()
+
         def populate_dlls():
             q = dll_filter.get().strip().lower()
             tree_dll.delete(*tree_dll.get_children())
             filtered = [m for m in raw_modules if (not q or q in m["name"].lower() or q in m["path"].lower())]
+            c = dll_sort["col"]
+            filtered.sort(key=lambda x: float(x.get("rss_kb", 0.0) or 0.0) if c == "rss" else str(x.get(c, "") or "").lower(), reverse=dll_sort["desc"])
             for m in filtered:
                 tree_dll.insert("", tk.END, values=(m["name"], m["path"], m["rss_kb"]))
             lbl_dll_count.configure(text=f"Total: {len(filtered)} / {len(raw_modules)} DLLs")
@@ -1099,6 +1159,8 @@ class ProxessorApp(tk.Tk):
             q = h_filter.get().strip().lower()
             tree_h.delete(*tree_h.get_children())
             filtered = [h for h in raw_handles if (not q or q in h["target"].lower() or q in h["detail"].lower() or q in h["type"].lower())]
+            c = handles_sort["col"]
+            filtered.sort(key=lambda x: str(x.get(c, "") or "").lower(), reverse=handles_sort["desc"])
             for h in filtered:
                 tree_h.insert("", tk.END, values=(h["type"], h["target"], h["detail"]))
             lbl_h_count.configure(text=f"Total: {len(filtered)} / {len(raw_handles)} Handles")
@@ -1147,9 +1209,51 @@ class ProxessorApp(tk.Tk):
                 pass
         threading.Thread(target=fetch, daemon=True).start()
 
+    def _sort_socket_table(self, col: str):
+        col_norm = col.lower()
+        if self.sock_sort_col == col_norm:
+            self.sock_sort_desc = not self.sock_sort_desc
+        else:
+            self.sock_sort_col = col_norm
+            self.sock_sort_desc = (col_norm in ("pid",))
+        self._update_socket_headers()
+        self._render_socket_table(self.cached_conns)
+
+    def _update_socket_headers(self):
+        arrow = " ▼" if self.sock_sort_desc else " ▲"
+        for col_id, title, _, _ in getattr(self, "socket_headers", []):
+            if col_id == self.sock_sort_col:
+                self.socket_tree.heading(col_id, text=f"{title}{arrow}")
+            else:
+                self.socket_tree.heading(col_id, text=title)
+
     def _render_socket_table(self, conns):
+        self.cached_conns = list(conns or [])
+        col = getattr(self, "sock_sort_col", "pid")
+        rev = getattr(self, "sock_sort_desc", False)
+
+        def sock_key(c):
+            if col == "pid":
+                return int(c.get("pid", 0) or 0)
+            elif col == "local":
+                return (str(c.get("local_addr", "") or ""), int(c.get("local_port", 0) or 0))
+            elif col == "remote":
+                return (str(c.get("remote_addr", "") or ""), int(c.get("remote_port", 0) or 0))
+            elif col == "name":
+                return str(c.get("name", "") or "").lower()
+            elif col == "state":
+                return str(c.get("state", "") or "").lower()
+            elif col == "proto":
+                return str(c.get("proto", "") or "").lower()
+            return str(c.get(col, "") or "").lower()
+
+        try:
+            sorted_conns = sorted(self.cached_conns, key=sock_key, reverse=rev)
+        except Exception:
+            sorted_conns = self.cached_conns
+
         self.socket_tree.delete(*self.socket_tree.get_children())
-        for c in conns:
+        for c in sorted_conns:
             local = f"{c.get('local_addr')}:{c.get('local_port')}"
             remote = f"{c.get('remote_addr')}:{c.get('remote_port')}" if c.get('remote_addr') else "*:*"
             self.socket_tree.insert("", tk.END, values=(
@@ -1160,7 +1264,7 @@ class ProxessorApp(tk.Tk):
                 c.get("name", "Unknown"),
                 c.get("pid", 0)
             ))
-        self.lbl_sock_count.configure(text=f"Active Sockets: {len(conns)}")
+        self.lbl_sock_count.configure(text=f"Active Sockets: {len(sorted_conns)}")
 
     def _on_kill_socket_process(self):
         selected = self.socket_tree.selection()
@@ -1207,20 +1311,59 @@ class ProxessorApp(tk.Tk):
                 pass
         threading.Thread(target=run, daemon=True).start()
 
+    def _sort_lock_table(self, col: str):
+        col_norm = col.lower()
+        if self.lock_sort_col == col_norm:
+            self.lock_sort_desc = not self.lock_sort_desc
+        else:
+            self.lock_sort_col = col_norm
+            self.lock_sort_desc = (col_norm in ("pid",))
+        self._update_lock_headers()
+        self._render_lockers(self.cached_lockers, getattr(self, "last_lock_path", ""))
+
+    def _update_lock_headers(self):
+        arrow = " ▼" if self.lock_sort_desc else " ▲"
+        for col_id, title, _, _ in getattr(self, "lock_headers", []):
+            if col_id == self.lock_sort_col:
+                self.lock_tree.heading(col_id, text=f"{title}{arrow}")
+            else:
+                self.lock_tree.heading(col_id, text=title)
+
     def _render_lockers(self, lockers, path):
+        self.cached_lockers = list(lockers or [])
+        self.last_lock_path = path
+        col = getattr(self, "lock_sort_col", "pid")
+        rev = getattr(self, "lock_sort_desc", False)
+
+        def lock_key(l):
+            if col == "pid":
+                return int(l.get("pid", 0) or 0)
+            elif col == "name":
+                return str(l.get("app_name", "") or "").lower()
+            elif col == "kind":
+                return str(l.get("kind", "") or "").lower()
+            elif col == "service":
+                return str(l.get("service", "") or "").lower()
+            return str(l.get(col, "") or "").lower()
+
+        try:
+            sorted_lockers = sorted(self.cached_lockers, key=lock_key, reverse=rev)
+        except Exception:
+            sorted_lockers = self.cached_lockers
+
         self.lock_tree.delete(*self.lock_tree.get_children())
-        if not lockers:
+        if not sorted_lockers:
             self.lbl_lock_status.configure(text=f"No active locks found for '{path}'. Resource is unlocked.")
             return
 
-        for item in lockers:
+        for item in sorted_lockers:
             self.lock_tree.insert("", tk.END, values=(
                 item.get("pid"),
                 item.get("app_name"),
                 item.get("kind"),
                 item.get("service") or "-"
             ))
-        self.lbl_lock_status.configure(text=f"Found {len(lockers)} locking process(es) holding '{path}'!")
+        self.lbl_lock_status.configure(text=f"Found {len(sorted_lockers)} locking process(es) holding '{path}'!")
 
     def _on_kill_file_locker(self):
         selected = self.lock_tree.selection()

@@ -75,14 +75,29 @@ class GUIController:
                 is_excluded = (name.lower() in self.probalance.excluded_names)
                 is_fg = (pid == self.foreground_pid)
 
+                status_text = "Normal"
+                if is_restrained:
+                    status_text = "Restrained (PB)"
+                elif is_fg:
+                    status_text = "Foreground"
+                elif is_excluded:
+                    status_text = "Excluded (PB)"
+
                 proc_list.append({
                     "pid": pid,
                     "ppid": ppid,
                     "name": name,
+                    "cpu": round(cpu_p, 1),
                     "cpu_percent": round(cpu_p, 1),
+                    "ram": round(mem_mb, 1),
                     "memory_mb": round(mem_mb, 1),
                     "threads": threads,
+                    "prio": prio,
                     "priority": prio,
+                    "aff": "All Cores",
+                    "affinity": "All Cores",
+                    "status": status_text,
+                    "status_text": status_text,
                     "is_foreground": is_fg,
                     "is_restrained": is_restrained,
                     "is_excluded": is_excluded
@@ -128,7 +143,7 @@ class GUIController:
         reverse: bool = True,
         active_only: bool = False
     ) -> List[Dict]:
-        """Filters and sorts the cached process list."""
+        """Filters and sorts the cached process list with complete multi-column typed sorting."""
         query = (search_query or "").strip().lower()
 
         results = self.cached_processes
@@ -141,8 +156,55 @@ class GUIController:
                 if query in p["name"].lower() or query == str(p["pid"])
             ]
 
+        PRIORITY_WEIGHTS = {
+            "REALTIME": 6,
+            "HIGH": 5,
+            "ABOVE_NORMAL": 4,
+            "NORMAL": 3,
+            "BELOW_NORMAL": 2,
+            "IDLE": 1,
+            "UNKNOWN": 0
+        }
+
+        def _sort_extractor(item: Dict):
+            c = (sort_by or "cpu").lower()
+            if c in ("pid",):
+                return item.get("pid", 0) or 0
+            elif c in ("name", "process_name"):
+                return (item.get("name") or "").lower()
+            elif c in ("cpu", "cpu_percent"):
+                val = item.get("cpu_percent", item.get("cpu", 0.0))
+                try:
+                    return float(val or 0.0)
+                except (ValueError, TypeError):
+                    return 0.0
+            elif c in ("ram", "memory_mb", "memory"):
+                val = item.get("memory_mb", item.get("ram", 0.0))
+                try:
+                    return float(val or 0.0)
+                except (ValueError, TypeError):
+                    return 0.0
+            elif c in ("prio", "priority"):
+                p_str = (item.get("priority", item.get("prio", "NORMAL")) or "NORMAL").upper()
+                return PRIORITY_WEIGHTS.get(p_str, 0)
+            elif c in ("aff", "affinity"):
+                return str(item.get("affinity", item.get("aff", "All Cores")) or "").lower()
+            elif c in ("threads", "thread", "num_threads"):
+                val = item.get("threads", 1)
+                try:
+                    return int(val or 1)
+                except (ValueError, TypeError):
+                    return 1
+            elif c in ("status", "status_text"):
+                return str(item.get("status_text", item.get("status", "Normal")) or "").lower()
+            else:
+                val = item.get(sort_by, 0)
+                if isinstance(val, (int, float)):
+                    return val
+                return str(val).lower()
+
         try:
-            return sorted(results, key=lambda x: x.get(sort_by, 0), reverse=reverse)
+            return sorted(results, key=_sort_extractor, reverse=reverse)
         except Exception:
             return results
 
