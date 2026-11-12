@@ -66,6 +66,11 @@
       "name": "Custom Rule for RobloxStudioBeta.exe",
       "pattern": "(?i)RobloxStudioBeta.exe",
       "priority": "ABOVE_NORMAL"
+    },
+    {
+      "name": "Custom Rule for DS4Windows.exe",
+      "pattern": "(?i)DS4Windows.exe",
+      "priority": "NORMAL"
     }
   ],
   "watchdogs": [

@@ -39,29 +39,22 @@ fn cmd_trim() {
     println!("Flushing working sets across system processes...");
     let ram_before = Win32Kernel::get_system_ram_percent();
     println!("RAM before trim: {:.1}%", ram_before);
-    let mut gov = GovernorEngine::new(AppConfig::load_from_file("../config/default_rules.json").unwrap_or_else(|_| {
-        AppConfig::load_from_file("config/default_rules.json").expect("Failed to load rules")
-    }));
+    let (config, resolved_path) = AppConfig::discover_and_load(None);
+    println!("Config used    : {}", resolved_path);
+    let mut gov = GovernorEngine::new(config);
     let stats = gov.tick(false);
     let ram_after = Win32Kernel::get_system_ram_percent();
     println!("Trimmed {} monitored processes.", stats.monitored_processes);
     println!("RAM after trim: {:.1}%", ram_after);
 }
 
-fn cmd_run(config_path: &str, dry_run: bool) {
+fn cmd_run(custom_config: Option<&str>, dry_run: bool) {
     print_banner();
-    println!("Config   : {}", config_path);
+    let (config, resolved_path) = AppConfig::discover_and_load(custom_config);
+    println!("Config   : {}", resolved_path);
     println!("Mode     : {}", if dry_run { "SIMULATED DRY-RUN" } else { "ACTIVE RING-3 KERNEL ENFORCEMENT" });
     println!("Status   : Online (Zero-GC native loop)... Press Ctrl+C to terminate.");
     println!("==================================================");
-
-    let config = match AppConfig::load_from_file(config_path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Error loading config from {}: {}", config_path, e);
-            std::process::exit(1);
-        }
-    };
 
     let poll_ms = config.engine.poll_interval_ms.max(200);
     let mut gov = GovernorEngine::new(config);
@@ -140,33 +133,73 @@ fn cmd_connections(filter: Option<&str>) {
     println!("Total sockets listed: {}", count);
 }
 
+fn print_help() {
+    print_banner();
+    println!("Portable Windows Process Governor & System Optimizer");
+    println!("Version : {}", env!("CARGO_PKG_VERSION"));
+    println!();
+    println!("USAGE:");
+    println!("  proxessor.exe [COMMAND] [OPTIONS]");
+    println!();
+    println!("COMMANDS:");
+    println!("  run                Start the active background governor engine (Default)");
+    println!("  status             Display current foreground PID & system RAM usage");
+    println!("  trim               Flush working sets across monitored processes");
+    println!("  topology           Display CPU P/E-Cores & 3D V-Cache affinity masks");
+    println!("  filelock <path>    Scan which processes lock a file or folder");
+    println!("  connections [f]    Enumerate active network TCP/UDP sockets (optional filter)");
+    println!("  help, -h, --help   Show this help message");
+    println!("  version, -v        Display version information");
+    println!();
+    println!("OPTIONS for 'run':");
+    println!("  --config <path>    Path to custom JSON configuration file");
+    println!("  --dry-run          Run in simulation mode without applying changes");
+    println!("==================================================");
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
-    let command = args.get(1).map(|s| s.as_str()).unwrap_or("run");
+    let first_arg = args.get(1).map(|s| s.as_str());
 
-    match command {
-        "topology" => cmd_topology(),
-        "status" => cmd_status(),
-        "trim" => cmd_trim(),
-        "filelock" => {
-            let path = args.get(2).map(|s| s.as_str()).unwrap_or(".");
-            cmd_filelock(path);
-        }
-        "connections" => {
-            let filter = args.get(2).map(|s| s.as_str());
-            cmd_connections(filter);
-        }
-        "run" => {
+    match first_arg {
+        None | Some("run") => {
             let dry_run = args.iter().any(|a| a == "--dry-run");
             let config_path = args
                 .windows(2)
                 .find(|w| w[0] == "--config")
-                .map(|w| w[1].as_str())
-                .unwrap_or("../config/default_rules.json");
+                .map(|w| w[1].as_str());
             cmd_run(config_path, dry_run);
         }
-        _ => {
-            println!("Usage: proxessor <run|topology|status|trim|filelock|connections> [args]");
+        Some("topology") => cmd_topology(),
+        Some("status") => cmd_status(),
+        Some("trim") => cmd_trim(),
+        Some("filelock") => {
+            let path = args.get(2).map(|s| s.as_str()).unwrap_or(".");
+            cmd_filelock(path);
+        }
+        Some("connections") => {
+            let filter = args.get(2).map(|s| s.as_str());
+            cmd_connections(filter);
+        }
+        Some("help") | Some("-h") | Some("--help") => {
+            print_help();
+        }
+        Some("version") | Some("-v") | Some("--version") => {
+            println!("Proxessor Core v{} (Windows x86_64 Portable)", env!("CARGO_PKG_VERSION"));
+        }
+        Some(unknown) => {
+            if unknown.starts_with("--") {
+                let dry_run = args.iter().any(|a| a == "--dry-run");
+                let config_path = args
+                    .windows(2)
+                    .find(|w| w[0] == "--config")
+                    .map(|w| w[1].as_str());
+                cmd_run(config_path, dry_run);
+            } else {
+                eprintln!("Unknown command: '{}'", unknown);
+                print_help();
+                std::process::exit(1);
+            }
         }
     }
 }

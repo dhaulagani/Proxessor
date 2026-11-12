@@ -91,9 +91,63 @@ fn default_restraint_duration() -> u64 { 10 }
 fn default_recovery_threshold() -> f32 { 50.0 }
 
 impl AppConfig {
+    pub const EMBEDDED_DEFAULT_CONFIG: &'static str = include_str!("../../config/default_rules.json");
+
+    pub fn load_embedded() -> Self {
+        serde_json::from_str(Self::EMBEDDED_DEFAULT_CONFIG)
+            .expect("Embedded default configuration must be valid JSON")
+    }
+
     pub fn load_from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let content = std::fs::read_to_string(path)?;
         let config: AppConfig = serde_json::from_str(&content)?;
         Ok(config)
+    }
+
+    pub fn discover_and_load(custom_path: Option<&str>) -> (Self, String) {
+        if let Some(path) = custom_path {
+            match Self::load_from_file(path) {
+                Ok(cfg) => return (cfg, path.to_string()),
+                Err(e) => {
+                    eprintln!("Warning: Failed to load specified config '{}': {}. Falling back to auto-discovery...", path, e);
+                }
+            }
+        }
+
+        // 1. Check relative to current executable's folder (essential for portable releases)
+        if let Ok(exe_path) = std::env::current_exe() {
+            if let Some(exe_dir) = exe_path.parent() {
+                let candidate1 = exe_dir.join("config").join("default_rules.json");
+                if candidate1.exists() {
+                    if let Ok(cfg) = Self::load_from_file(&candidate1.to_string_lossy()) {
+                        return (cfg, candidate1.to_string_lossy().to_string());
+                    }
+                }
+                let candidate2 = exe_dir.join("default_rules.json");
+                if candidate2.exists() {
+                    if let Ok(cfg) = Self::load_from_file(&candidate2.to_string_lossy()) {
+                        return (cfg, candidate2.to_string_lossy().to_string());
+                    }
+                }
+            }
+        }
+
+        // 2. Check relative to current working directory
+        let search_paths = [
+            "config/default_rules.json",
+            "default_rules.json",
+            "../config/default_rules.json",
+        ];
+
+        for path in search_paths {
+            if std::path::Path::new(path).exists() {
+                if let Ok(cfg) = Self::load_from_file(path) {
+                    return (cfg, path.to_string());
+                }
+            }
+        }
+
+        // 3. Fallback to embedded default configuration
+        (Self::load_embedded(), "Embedded Default Rules (Internal)".to_string())
     }
 }
