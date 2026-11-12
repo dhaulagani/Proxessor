@@ -15,9 +15,30 @@ class RuleManager:
         self.disallowed_patterns: List[re.Pattern] = []
         self.load()
 
+    def _resolve_config_path(self, path: str) -> str:
+        import os
+        import sys
+        if os.path.exists(path):
+            return path
+        candidates = [
+            os.path.join(os.path.dirname(sys.executable), path),
+            os.path.join(os.path.dirname(sys.executable), "config", "default_rules.json"),
+            os.path.join(os.path.dirname(sys.executable), "default_rules.json"),
+            os.path.join(getattr(sys, "_MEIPASS", ""), path) if getattr(sys, "_MEIPASS", None) else "",
+            os.path.join(getattr(sys, "_MEIPASS", ""), "config", "default_rules.json") if getattr(sys, "_MEIPASS", None) else "",
+            os.path.join(os.getcwd(), "config", "default_rules.json"),
+            os.path.join(os.getcwd(), "default_rules.json"),
+            os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "config", "default_rules.json")
+        ]
+        for c in candidates:
+            if c and os.path.exists(c):
+                return c
+        return path
+
     def load(self):
         """Reads configuration JSON file and compiles patterns."""
-        with open(self.config_path, "r", encoding="utf-8") as f:
+        resolved = self._resolve_config_path(self.config_path)
+        with open(resolved, "r", encoding="utf-8") as f:
             data = json.load(f)
 
         engine_data = data.get("engine", {})

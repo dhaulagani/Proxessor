@@ -140,9 +140,15 @@ class FileLockHunter:
 
     def _query_native_cli(self, target_path: str) -> List[Dict[str, any]]:
         import subprocess
-        # Check standard binary locations
-        for exe_path in ["proxessor.exe", "rust/target/release/proxessor.exe", "rust/target/debug/proxessor.exe"]:
-            if os.path.exists(exe_path):
+        candidate_paths = [
+            "proxessor.exe",
+            os.path.join(os.path.dirname(sys.executable), "proxessor.exe"),
+            os.path.join(getattr(sys, '_MEIPASS', ''), "proxessor.exe") if getattr(sys, '_MEIPASS', None) else "",
+            "rust/target/release/proxessor.exe",
+            "rust/target/debug/proxessor.exe",
+        ]
+        for exe_path in candidate_paths:
+            if exe_path and os.path.exists(exe_path):
                 try:
                     out = subprocess.check_output([exe_path, "filelock", target_path], text=True, stderr=subprocess.DEVNULL)
                     # Parse output lines

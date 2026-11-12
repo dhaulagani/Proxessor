@@ -7,6 +7,9 @@ import sys
 
 # Guarantee repository root is always in Python module lookup path
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+if getattr(sys, 'frozen', False):
+    ROOT_DIR = getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
+
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
